@@ -1,0 +1,58 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Dynhat_v2",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/script/main_single.py", 
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/script/",
+            "justMyCode": false,
+            "args": [
+                "--model", "dynhat",
+                // "--model", "HTGN",
+
+                // "--seq_model", "Attention", // Attention
+                // "--temporal_attention_layer_heads", "1", //Attention temporal heads num
+                // "--model", "HTGN",
+
+                "--seq_model", "LSTM", // RNN, LSTM
+                
+
+                // "--dataset", "enron184",
+                // "--split_count", "12",
+                // "--dataset", "enron10",
+                // "--split_count", "10",
+                // "--dataset", "bitcoin_alpha",
+                // "--split_count", "13",
+                "--dataset", "bitcoin",
+                "--split_count", "13",
+                // "--dataset", "yelp_review",
+                // "--split_count", "9",
+                // "--dataset", "email_eu_core",
+                // "--split_count", "8",
+                // "--dataset", "mathoverflow",
+                // "--split_count", "16",
+
+                "--nhid", "8",
+                "--nout", "8",
+
+                "--aggregation", "deg", // deg att
+                
+                "--manifold", "Hyperboloid",
+                // "--manifold", "PoincareBall",
+                // "--manifold", "Euclidean",
+
+                // "--lr", "0.001", # 如果是Euclidean空间需要设置lr0.001 否则梯度nan
+                "--max_epoch", "100",
+                "--device_id", "-1",
+                "--fix_curvature", "True", // 如果不固定cur则不写这个配置
+                
+            ] 
+        }
+    ]
+}
