@@ -9,7 +9,6 @@ from torch_scatter import scatter, scatter_add
 from torch_geometric.nn.conv import MessagePassing, GATConv
 from torch.nn.parameter import Parameter
 from torch_geometric.nn.inits import glorot, zeros
-from script.hgcn.manifolds import PoincareBall
 import itertools
 
 
@@ -395,7 +394,7 @@ mobius_linear(...): שכבה לינארית היפרבולית כללית (עם 
 """
     def __init__(self, args):
         super(HypGRU, self).__init__()
-        self.manifold = PoincareBall()
+        # self.manifold = PoincareBall()
         self.nhid = args.nhid
         self.weight_ih = Parameter(torch.Tensor(3 * args.nhid, args.nhid), requires_grad=True).to(args.device)
         self.weight_hh = Parameter(torch.Tensor(3 * args.nhid, args.nhid), requires_grad=True).to(args.device)

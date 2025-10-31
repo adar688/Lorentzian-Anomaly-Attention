@@ -51,8 +51,8 @@ except Exception:
     pass
 
 # --- נתיבי קלט/פלט ---
-INPUT_CSV = Path("src/data/final_filtered_by_fos_and_reference.csv")
-OUTPUT_DIR = Path("src/data/custom_out")  # תיקיית יעד (ניתן לשנות)
+INPUT_CSV = Path("script/data/final_filtered_by_fos_and_reference.csv")
+OUTPUT_DIR = Path("script/data/custom_out")  # תיקיית יעד (ניתן לשנות)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 RANDOM_SEED = 42

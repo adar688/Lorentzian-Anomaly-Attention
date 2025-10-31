@@ -8,7 +8,7 @@ from torch_geometric.nn.inits import glorot, kaiming_uniform
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from script.hgcn.layers.hyplayers import HGATConv, HGCNConv, TemporalAttentionLayer
-from script.hgcn.manifolds import PoincareBall, Hyperboloid, Euclidean
+from script.hgcn.manifolds import  Hyperboloid, Euclidean
 
 
 class Dynhat(nn.Module):
