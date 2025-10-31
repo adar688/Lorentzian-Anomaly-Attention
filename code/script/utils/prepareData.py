@@ -42,7 +42,7 @@ try:
     from config import args
     TIME_STAMPS = args.Time_stamps
 except Exception:
-    TIME_STAMPS = 12  # ברירת מחדל אם אין args
+    TIME_STAMPS = 3  # ברירת מחדל אם אין args
 
 # תמיכה בהדפסה ב-Unicode במסופים מסוימים
 try:
