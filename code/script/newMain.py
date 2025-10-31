@@ -19,6 +19,13 @@ from script.utils.dynamic_node2vec import (
 )
 from script.utils.dataUtils import load_citation_data  # המימוש המינימלי שכתבנו
 
+# === ייבוא למודולי אנומליות והשוואה ===
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
+from scipy.stats import spearmanr
+import pandas as pd
+
 def parse_args():
     p = argparse.ArgumentParser(description="Unified main: Dynamic Node2Vec + data loading.")
     # נתיבי קלט
@@ -130,6 +137,31 @@ def main():
 
         train_losses.append(loss.item())
         print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
+
+            # -----------------------------------------------------------
+    # שלב 5: IF+LOF על וקטור מאוחד (שיטוח [T,C] לכל צומת)
+    # -----------------------------------------------------------
+    N = att_output.shape[0]
+    X_flat = att_output.reshape(N, -1).detach().cpu().numpy()  # [N, T*C]
+
+    # נרמול — חשוב במיוחד ל-LOF
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_flat)
+
+    contam = args.contamination
+    lof_k = args.lof_n_neighbors
+    K = max(1, min(args.topk, N))
+
+    # Isolation Forest
+    if_clf = IsolationForest(n_estimators=100, contamination=contam, random_state=42)
+    if_clf.fit(X_scaled)
+    if_scores = -if_clf.decision_function(X_scaled)  # גדול=יותר אנומלי
+    if_labels = if_clf.predict(X_scaled)             # 1=נורמלי, -1=אנומלי
+
+    # LOF (unsupervised, novelty=False)
+    lof = LocalOutlierFactor(n_neighbors=lof_k, contamination=contam, novelty=False)
+    lof_labels = lof.fit_predict(X_scaled)                 # 1/-1
+    lof_scores = -(lof.negative_outlier_factor_)           # גדול=יותר אנומלי
     
 
 
