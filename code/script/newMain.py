@@ -294,30 +294,72 @@ def main():
     # -----------------------------------------------------------
     # שלב 5: IF+LOF על וקטור מאוחד (שיטוח [T,C] לכל צומת) — (נשאר כמו שהיה)
     # -----------------------------------------------------------
-    N_eval = att_output.shape[0]
-    X_flat = att_output.reshape(N_eval, -1).detach().cpu().numpy()  # [N, T*C]
+    N_eval, T_eval = att_output.shape[0], att_output.shape[1]  # [N, T, C]
+    C_eval = att_output.shape[2]
 
-    # נרמול — חשוב במיוחד ל-LOF
-    scaler = MinMaxScaler()
-    X_scaled = scaler.fit_transform(X_flat)
+    # ודא צורה [N, T, C]
+    assert att_output.ndim == 3, "att_output חייב להיות [N, T, C] לניתוח טמפורלי פר-חותמת זמן"
+
+    # מיכלים לוקטורי ציונים טמפורליים
+    AS_if  = np.zeros((N_eval, T_eval), dtype=np.float32)  # AS_i^IF(t)
+    AS_lof = np.zeros((N_eval, T_eval), dtype=np.float32)  # AS_i^LOF(t)
 
     contam = args.contamination
-    lof_k = args.lof_n_neighbors
+    lof_k  = args.lof_n_neighbors
+
+    for t in range(T_eval):
+        # X_t: אמבדינגים/לוגיטים בזמן t, צורה [N, C]
+        X_t = att_output[:, t, :].detach().cpu().numpy()
+
+        # נרמול פר-זמן (מומלץ כדי לא “לשבור” השוואות בין T שונים)
+        scaler_t = MinMaxScaler()
+        X_t_scaled = scaler_t.fit_transform(X_t)
+
+        # Isolation Forest בזמן t
+        if_clf_t = IsolationForest(
+            n_estimators=100,
+            contamination=contam,
+            random_state=args.random_state,
+            n_jobs=-1
+        )
+        if_clf_t.fit(X_t_scaled)
+        # החלטנו על סימן אחיד: גדול = יותר חריג
+        AS_if[:, t] = -if_clf_t.decision_function(X_t_scaled)
+
+        # LOF בזמן t (novelty=False → ציונים על דאטן האימון)
+        lof_t = LocalOutlierFactor(
+            n_neighbors=lof_k,
+            contamination=contam,
+            novelty=False,
+            n_jobs=-1
+        )
+        lof_labels_t = lof_t.fit_predict(X_t_scaled)
+        AS_lof[:, t]  = -(lof_t.negative_outlier_factor_)  # גדול = יותר חריג
+
+    # פרופילים סטטיסטיים פר-צומת על פני הזמן (ממוצע ו-STD)
+    mu_if  = AS_if.mean(axis=1)
+    std_if = AS_if.std(axis=1, ddof=0)
+    mu_lof  = AS_lof.mean(axis=1)
+    std_lof = AS_lof.std(axis=1, ddof=0)
+
+    # אופציונלי: Top-K לפי ממוצע IF/LOF (דוגמה)
     K = max(1, min(args.topk, N_eval))
+    top_if_idx  = np.argsort(-mu_if)[:K]
+    top_lof_idx = np.argsort(-mu_lof)[:K]
 
-    # Isolation Forest
-    if_clf = IsolationForest(n_estimators=100, contamination=contam, random_state=args.random_state)
-    if_clf.fit(X_scaled)
-    if_scores = -if_clf.decision_function(X_scaled)  # גדול=יותר אנומלי
-    if_labels = if_clf.predict(X_scaled)             # 1=נורמלי, -1=אנומלי
+    print("✅ Temporal IF/LOF computed per time step.")
+    print("Top IF (by mean over time):", top_if_idx.tolist())
+    print("Top LOF (by mean over time):", top_lof_idx.tolist())
 
-    # LOF (unsupervised, novelty=False)
-    lof = LocalOutlierFactor(n_neighbors=lof_k, contamination=contam, novelty=False)
-    lof_labels = lof.fit_predict(X_scaled)           # 1/-1
-    lof_scores = -(lof.negative_outlier_factor_)     # גדול=יותר אנומלי
-
-    print("✅ IF/LOF computed. Examples:",
-          {"IF": if_scores[:5].tolist(), "LOF": lof_scores[:5].tolist()})
+    # אם תרצי לשמור לפוסט-אנליזה/גרפים:
+    temporal_anomaly_package = {
+        "AS_if": AS_if,        # shape [N, T]
+        "AS_lof": AS_lof,      # shape [N, T]
+        "mu_if": mu_if,        # shape [N]
+        "std_if": std_if,      # shape [N]
+        "mu_lof": mu_lof,      # shape [N]
+        "std_lof": std_lof,    # shape [N]
+    }
 
     # -----------------------------------------------------------
     # שלב 6: Stage 4 — Noise Injection Validation (TPR/FPR) אחרי IF+LOF
