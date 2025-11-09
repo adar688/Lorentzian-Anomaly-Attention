@@ -11,6 +11,7 @@ import copy
 import torch
 import torch.nn.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
 import networkx as nx
 from torch_geometric.utils import from_scipy_sparse_matrix, from_networkx
 from models.Dynhat import Dynhat
@@ -190,6 +191,32 @@ def validate_with_noise_injection(
     return {"summary": summary, "results_per_iter": results_per_iter}
 
 
+def plot_mean_std(mu_if: np.ndarray, std_if: np.ndarray, top_k: int = 10):
+    N = len(mu_if)
+    x = np.arange(N)
+
+    plt.figure(figsize=(11, 6))
+
+    # ציור mean ו-std כעמודות
+    plt.bar(x - 0.2, mu_if, width=0.4, color='skyblue', alpha=0.7, label='Mean (μ)')
+    plt.bar(x + 0.2, std_if, width=0.4, color='orange', alpha=0.7, label='Std Dev (σ)')
+
+    # הדגשת חריגים לפי mean
+    top_mean_idx = np.argsort(-mu_if)[:top_k]
+    plt.scatter(top_mean_idx, mu_if[top_mean_idx], color='red', s=80, label=f'Top {top_k} Mean')
+
+    # הדגשת חריגים לפי std
+    top_std_idx = np.argsort(-std_if)[:top_k]
+    plt.scatter(top_std_idx, std_if[top_std_idx], color='purple', s=80, label=f'Top {top_k} Std')
+
+    plt.title('Isolation Forest — Mean & Std per Node', fontsize=14)
+    plt.xlabel('Node index (i)', fontsize=12)
+    plt.ylabel('Score value', fontsize=12)
+    plt.legend()
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.tight_layout()
+    plt.show()
+
 def main():
     # UTF-8 למסופים מסוימים
     try:
@@ -361,6 +388,10 @@ def main():
         "std_lof": std_lof,    # shape [N]
     }
 
+    plot_mean_std(mu_if, std_if, top_k=20)
+
+    plot_mean_std(mu_lof, std_lof, top_k=20)
+
     # -----------------------------------------------------------
     # שלב 6: Stage 4 — Noise Injection Validation (TPR/FPR) אחרי IF+LOF
     # -----------------------------------------------------------
@@ -395,10 +426,6 @@ def main():
             "edge_index": edge_index.cpu(),
             "labels": labels.cpu(),
             "att_output": att_output.cpu(),
-            "IF_scores": if_scores,
-            "IF_labels": if_labels,
-            "LOF_scores": lof_scores,
-            "LOF_labels": lof_labels,
             "noise_validation": noise_res
         }, args.save_bundle)
         print(f"💾 Saved bundle to: {args.save_bundle}")
