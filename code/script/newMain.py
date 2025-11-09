@@ -72,6 +72,8 @@ def parse_args():
     p.add_argument("--batch-norm", action="store_true", help="לאפשר BatchNorm אם קיים במודל")
     p.add_argument("--nfeat", type=int, default=None,
                    help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
+    p.add_argument("--nout", type=int, default=None,
+                   help="מספר יחידות פלט של המודל (ברירת מחדל: יוגדר לפי num_classes)")
 
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
@@ -339,39 +341,50 @@ def main():
     if not hasattr(args, "nclass"):
         args.nclass = args.num_classes
 
-    print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.nclass}")
+    # לקבע nout (מס' יחידות פלט במודל) לפי מספר המחלקות
+    if getattr(args, "nout", None) in (None, 0):
+        args.nout = args.num_classes
+
+    # אם יש רק מחלקה אחת – אין טעם ב-CrossEntropy (נמשיך בלי אימון מונחה)
+    single_class_problem = args.num_classes < 2
+
+    print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.nclass}, nout={args.nout}")
 
     # -----------------------------------------------------------
-    # שלב 3: מודל Dynhat + אימון
+    # שלב 3: מודל Dynhat + אימון (מדלגים על אימון אם יש רק מחלקה אחת)
     # -----------------------------------------------------------
     model = Dynhat(args, time_length=T_bins).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     train_losses: list[float] = []
 
-    for epoch in range(args.max_epoch):
-        model.train()
-        optimizer.zero_grad()
+    if not single_class_problem:
+        for epoch in range(args.max_epoch):
+            model.train()
+            optimizer.zero_grad()
 
-        # 1) Forward על כל ה-T טיימסטמפים
-        temporal_outputs = []
-        for t in range(T_bins):
-            x_t = embedding_matrix[:, t, :].to(device)  # [N, F]
-            h_t = model(edge_index, x=x_t)              # [N, C]
-            temporal_outputs.append(h_t)
+            # 1) Forward על כל ה-T טיימסטמפים
+            temporal_outputs = []
+            for t in range(T_bins):
+                x_t = embedding_matrix[:, t, :].to(device)  # [N, F]
+                h_t = model(edge_index, x=x_t)              # [N, C]
+                temporal_outputs.append(h_t)
 
-        # 2) ערימה + שכבת קשב → בחירת זמן אחרון ללוס
-        X = torch.stack(temporal_outputs, dim=1)        # [N, T, C]
-        att = model.ddy_attention_layer(X)              # [N, T, C] או [N, C]
-        logits = att[:, -1, :] if att.ndim == 3 else att  # [N, C]
+            # 2) ערימה + שכבת קשב → בחירת זמן אחרון ללוס
+            X = torch.stack(temporal_outputs, dim=1)        # [N, T, C]
+            att = model.ddy_attention_layer(X)              # [N, T, C] או [N, C]
+            logits = att[:, -1, :] if att.ndim == 3 else att  # [N, C]
 
-        # 3) Loss + עדכון משקולות
-        loss = F.cross_entropy(logits[idx_train], labels[idx_train])
-        loss.backward()
-        optimizer.step()
+            # 3) Loss + עדכון משקולות
+            loss = F.cross_entropy(logits[idx_train], labels[idx_train])
+            loss.backward()
+            optimizer.step()
 
-        train_losses.append(loss.item())
-        print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
+            train_losses.append(loss.item())
+            print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
+    else:
+        print("⚠ Detected a single class in labels. Skipping supervised cross-entropy training.")
+        model.eval()
 
     # -----------------------------------------------------------
     # === חישוב att_output במצב eval כדי שישמש ל-IF + LOF שלך ===
