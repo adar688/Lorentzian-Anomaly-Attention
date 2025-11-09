@@ -46,30 +46,52 @@ def parse_args():
     p.add_argument("--t-max", type=int, default=None,
                    help="אופציונלי: שימוש רק ב-T הראשונים (לבדיקות/קיצור)")
 
+    # מניפולד/גיאומטריה
     p.add_argument("--manifold", type=str, default="Hyperboloid",
-               help="שם המניפולד למודל Dynhat (למשל: 'lorentz', 'poincare', 'euclidean')")
+                   help="שם המניפולד למודל Dynhat (למשל: 'Hyperboloid'/'lorentz', 'poincare', 'euclidean')")
+    p.add_argument("--fix_curvature", action="store_true",
+                   help="אם מצוין: העקמומיות (curvature) מקובעת ולא מתעדכנת באימון")
+    p.add_argument("--curvature", type=float, default=1.0,
+                   help="ערך עקמומיות התחלתי |K| (לדוגמה 1.0). חלק מהיישומים קוראים לזה c או c0")
+    p.add_argument("--c0", type=float, default=1.0,
+                   help="שם אלטרנטיבי לעקמומיות התחלתית אם המודל משתמש בשם זה")
+
+    # היפר־פרמטרים של Dynhat
+    p.add_argument("--nhid", type=int, default=64, help="גודל השכבה החבויה (hidden size)")
+    p.add_argument("--dropout", type=float, default=0.5, help="Dropout כולל")
+    p.add_argument("--attn-dropout", type=float, default=0.0, help="Dropout בשכבת הקשב (אם קיים)")
+    p.add_argument("--feat-dropout", type=float, default=0.0, help="Dropout על פיצ'רים (אם קיים)")
+    p.add_argument("--alpha", type=float, default=0.2, help="LeakyReLU negative slope")
+    p.add_argument("--nheads", type=int, default=1, help="מספר ראשים בקשב גרפי (אם קיים)")
     p.add_argument("--temporal_attention_layer_heads", type=int, default=1,
-                   help="מספר הראשים בשכבת הקשב הטמפורלי (אם 1 -> single head)")
-    p.add_argument("--nhid", type=int, default=64,
-               help="גודל השכבה החבויה (hidden size) במודל Dynhat")
+                   help="מספר הראשים בשכבת הקשב הטמפורלי")
+    p.add_argument("--bias", type=int, choices=[0,1], default=1,
+                   help="להשתמש ב-bias (1) או לא (0) בשכבות שרלוונטיות")
+    p.add_argument("--residual", action="store_true", help="לאפשר חיבורי residual אם קיים במודל")
+    p.add_argument("--batch-norm", action="store_true", help="לאפשר BatchNorm אם קיים במודל")
+
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
     p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
     p.add_argument("--weight-decay", type=float, default=5e-4, help="למידה - Adam weight decay")
+
     # מכשיר ושמירה
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                    help="cuda / cpu")
     p.add_argument("--save-bundle", type=str, default="",
                    help="נתיב לשמירת חבילה אחת בסוף (embedding_matrix + graph tensors). ריק = לא שומר.")
+
     # אנומליות
     p.add_argument("--contamination", type=float, default=0.05, help="אחוז אנומליות משוער ל-IF/LOF")
     p.add_argument("--lof-n-neighbors", type=int, default=20, help="k של LOF")
     p.add_argument("--topk", type=int, default=20, help="Top-K להצגה/ניתוח (לא חובה)")
+
     # רעש (Stage 4)
     p.add_argument("--noise-percent", type=float, default=0.05, help="k% צמתי רעש מכלל הצמתים")
     p.add_argument("--noise-connect-prob", type=float, default=0.5, help="הסתברות חיבור רעש↔מקוריים")
     p.add_argument("--noise-iters", type=int, default=30, help="מספר איטרציות ולידציה עם רעש")
     p.add_argument("--random-state", type=int, default=42, help="זרע רנדומי לשחזוריות")
+
     return p.parse_args()
 
 # ========================================================
