@@ -77,6 +77,15 @@ def parse_args():
                    help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
     p.add_argument("--nout", type=int, default=None,
                    help="מספר יחידות פלט של המודל (ברירת מחדל: יוגדר לפי num_classes)")
+    p.add_argument("--seq-model", dest="seq_model", type=str, default="gru",
+                   choices=["gru", "lstm", "transformer", "none"],
+                   help="מודל רצף טמפורלי בתוך Dynhat")
+    p.add_argument("--seq-hidden", dest="seq_hidden", type=int, default=128,
+                   help="גודל החבוי של מודל הרצף")
+    p.add_argument("--seq-layers", dest="seq_layers", type=int, default=1,
+                   help="מספר שכבות במודל הרצף")
+    p.add_argument("--seq-dropout", dest="seq_dropout", type=float, default=0.1,
+                   help="Dropout בתוך מודל הרצף")
 
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
@@ -124,6 +133,10 @@ def _ensure_dynhat_defaults(args):
         "batch_norm": False,
         "manifold": "Hyperboloid",
         "aggregation": "att",
+        "seq_model": "gru",
+        "seq_hidden": 128,
+        "seq_layers": 1,
+        "seq_dropout": 0.1,
     }
     for k, v in defaults.items():
         if not hasattr(args, k):
