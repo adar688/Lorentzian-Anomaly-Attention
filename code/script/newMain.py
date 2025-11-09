@@ -28,6 +28,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from scipy.stats import spearmanr
 import pandas as pd
+import re
 
 
 # ==============================
@@ -300,6 +301,40 @@ def plot_mean_std(mu_if: np.ndarray, std_if: np.ndarray, top_k: int = 10):
     plt.show()
 
 
+
+
+def _auto_fit_nhid_and_rebuild(model_cls, args, device, edge_index, probe_x, time_length, max_tries=2):
+    """
+    מנסה להריץ צעד forward אחד. אם מתקבלת שגיאת כפל מטריצות (mobius_matvec),
+    מפענח את הממדים מהשגיאה, מתאים args.nhid = U - 1, ובונה מודל מחדש.
+    """
+    for _ in range(max_tries):
+        model = model_cls(args, time_length=time_length).to(device)
+        try:
+            with torch.no_grad():
+                _ = model(edge_index, x=probe_x)  # צעד בדיקה יחיד
+            return model  # הצליח, אין התאמות נדרשות
+        except RuntimeError as e:
+            msg = str(e)
+            # מחפשים תבנית כמו: "mat1 and mat2 shapes cannot be multiplied (5x2 and 65x65)"
+            m = re.search(r"mat1 and mat2 shapes cannot be multiplied \(\d+x(\d+) and (\d+)x(\d+)\)", msg)
+            if m is None:
+                raise  # שגיאה אחרת – מעבירים הלאה
+            u_dim = int(m.group(1))  # ה-U מהצורה (N x U)
+            w_in = int(m.group(2))   # ה-in_features של המשקל (W_in x W_out או ההפך, תלוי במימוש)
+            # ב-HGCN לרוב הקלט הוא (nhid + 1). אם אנחנו רואים U=2, צריך nhid=1, וכו'.
+            suggested_nhid = max(1, u_dim - 1)
+            if getattr(args, "nhid", None) == suggested_nhid:
+                # כבר ניסינו את הערך הזה – אין טעם לחזור
+                raise
+            print(f"🔧 Adjusting args.nhid from {getattr(args,'nhid',None)} to {suggested_nhid} based on probe (U={u_dim}).")
+            args.nhid = suggested_nhid
+            # עדכון נגזר: לעיתים יש שכבות שמוגדרות על בסיס nhid+1, אין עוד מה לעשות כאן – נבנה מחדש בלופ
+            continue
+    # אם לא הצליח בתוך max_tries
+    raise RuntimeError("Failed to auto-fit nhid after probe attempts.")
+
+
 def main():
     # UTF-8 למסופים מסוימים
     try:
@@ -377,8 +412,12 @@ def main():
     # -----------------------------------------------------------
     # שלב 3: מודל Dynhat + אימון (מדלגים על אימון אם יש רק מחלקה אחת)
     # -----------------------------------------------------------
-    model = Dynhat(args, time_length=T_bins).to(device)
+   # נבדוק מראש ממד בפועל באמצעות פריים יחיד כדי לכוון את nhid אם צריך
+    probe_x = embedding_matrix[:, 0, :].to(device)  # פריים זמן בודד כבדיקה
+    model = _auto_fit_nhid_and_rebuild(Dynhat, args, device, edge_index, probe_x, time_length=T_bins)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    print(f"✅ Dynhat ready with nhid={args.nhid} (agg_feat_size={args.nhid + 1}).")
 
     train_losses: list[float] = []
 
