@@ -70,13 +70,13 @@ def parse_args():
                    help="להשתמש ב-bias (1) או לא (0) בשכבות שרלוונטיות")
     p.add_argument("--residual", action="store_true", help="לאפשר חיבורי residual אם קיים במודל")
     p.add_argument("--batch-norm", action="store_true", help="לאפשר BatchNorm אם קיים במודל")
+    p.add_argument("--aggregation", type=str, default="att",
+                   choices=["att", "mean", "sum", "max"],
+                   help="סוג האגרגציה הטמפורלית/גרפית במודל (att/mean/sum/max)")
     p.add_argument("--nfeat", type=int, default=None,
                    help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
     p.add_argument("--nout", type=int, default=None,
                    help="מספר יחידות פלט של המודל (ברירת מחדל: יוגדר לפי num_classes)")
-    p.add_argument("--aggregation", type=str, default="att",
-               choices=["att", "mean", "sum", "max"],
-               help="סוג האגרגציה הטמפורלית/גרפית במודל (att/mean/sum/max)")
 
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
@@ -134,6 +134,9 @@ def _ensure_dynhat_defaults(args):
         args.heads = args.nheads
     if isinstance(getattr(args, "bias", True), int):
         args.bias = bool(args.bias)
+    if not hasattr(args, "c"):
+        # ערך c לארגומנטים, נשתמש בו גם כ-fallback למחלקה אם צריך
+        args.c = float(getattr(args, "curvature", getattr(args, "c0", 1.0)))
 
     return args
 
@@ -353,6 +356,10 @@ def main():
     single_class_problem = args.num_classes < 2
 
     print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.nclass}, nout={args.nout}")
+
+    # ---- Fallback קריטי: לספק ערך עקמומיות ברמת המחלקה אם __init__ משתמש ב-self.c לפני שהוגדר ----
+    # (Python מחפש קודם באטריביוטי האובייקט ואז במחלקה. זה מונע AttributeError בלי לגעת ב-Dynhat.py)
+    Dynhat.c = float(getattr(args, "c", getattr(args, "curvature", getattr(args, "c0", 1.0))))
 
     # -----------------------------------------------------------
     # שלב 3: מודל Dynhat + אימון (מדלגים על אימון אם יש רק מחלקה אחת)
