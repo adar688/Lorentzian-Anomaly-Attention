@@ -48,6 +48,8 @@ def parse_args():
 
     p.add_argument("--manifold", type=str, default="Hyperboloid",
                help="שם המניפולד למודל Dynhat (למשל: 'lorentz', 'poincare', 'euclidean')")
+    p.add_argument("--temporal_attention_layer_heads", type=int, default=1,
+                   help="מספר הראשים בשכבת הקשב הטמפורלי (אם 1 -> single head)")
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
     p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
