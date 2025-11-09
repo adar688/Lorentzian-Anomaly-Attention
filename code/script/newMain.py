@@ -74,6 +74,9 @@ def parse_args():
                    help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
     p.add_argument("--nout", type=int, default=None,
                    help="מספר יחידות פלט של המודל (ברירת מחדל: יוגדר לפי num_classes)")
+    p.add_argument("--aggregation", type=str, default="att",
+               choices=["att", "mean", "sum", "max"],
+               help="סוג האגרגציה הטמפורלית/גרפית במודל (att/mean/sum/max)")
 
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
@@ -120,6 +123,7 @@ def _ensure_dynhat_defaults(args):
         "residual": False,
         "batch_norm": False,
         "manifold": "Hyperboloid",
+        "aggregation": "att",
     }
     for k, v in defaults.items():
         if not hasattr(args, k):
