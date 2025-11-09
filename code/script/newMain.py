@@ -29,6 +29,7 @@ from sklearn.neighbors import LocalOutlierFactor
 from scipy.stats import spearmanr
 import pandas as pd
 
+
 # ==============================
 #    פרמטרים וארגומנטים
 # ==============================
@@ -55,7 +56,6 @@ def parse_args():
                    help="ערך עקמומיות התחלתי |K| (לדוגמה 1.0). חלק מהיישומים קוראים לזה c או c0")
     p.add_argument("--c0", type=float, default=1.0,
                    help="שם אלטרנטיבי לעקמומיות התחלתית אם המודל משתמש בשם זה")
-    
 
     # היפר־פרמטרים של Dynhat
     p.add_argument("--nhid", type=int, default=64, help="גודל השכבה החבויה (hidden size)")
@@ -66,12 +66,12 @@ def parse_args():
     p.add_argument("--nheads", type=int, default=1, help="מספר ראשים בקשב גרפי (אם קיים)")
     p.add_argument("--temporal_attention_layer_heads", type=int, default=1,
                    help="מספר הראשים בשכבת הקשב הטמפורלי")
-    p.add_argument("--bias", type=int, choices=[0,1], default=1,
+    p.add_argument("--bias", type=int, choices=[0, 1], default=1,
                    help="להשתמש ב-bias (1) או לא (0) בשכבות שרלוונטיות")
     p.add_argument("--residual", action="store_true", help="לאפשר חיבורי residual אם קיים במודל")
     p.add_argument("--batch-norm", action="store_true", help="לאפשר BatchNorm אם קיים במודל")
     p.add_argument("--nfeat", type=int, default=None,
-               help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
+                   help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
 
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
@@ -96,6 +96,41 @@ def parse_args():
     p.add_argument("--random-state", type=int, default=42, help="זרע רנדומי לשחזוריות")
 
     return p.parse_args()
+
+
+def _ensure_dynhat_defaults(args):
+    """
+    רשת ביטחון: ממלא דיפולטים אם חסר ארגומנט שה- Dynhat עשוי לבקש.
+    לא דורסת ערכים שכבר קיימים.
+    """
+    defaults = {
+        "nhid": 64,
+        "dropout": 0.5,
+        "attn_dropout": 0.0,
+        "feat_dropout": 0.0,
+        "alpha": 0.2,
+        "nheads": 1,
+        "temporal_attention_layer_heads": 1,
+        "fix_curvature": False,
+        "curvature": 1.0,
+        "c0": 1.0,
+        "bias": True,
+        "residual": False,
+        "batch_norm": False,
+        "manifold": "Hyperboloid",
+    }
+    for k, v in defaults.items():
+        if not hasattr(args, k):
+            setattr(args, k, v)
+
+    # התאמות שמות נפוצות
+    if not hasattr(args, "heads") and hasattr(args, "nheads"):
+        args.heads = args.nheads
+    if isinstance(getattr(args, "bias", True), int):
+        args.bias = bool(args.bias)
+
+    return args
+
 
 # ========================================================
 #  Stage 4 unified: validate_with_noise_injection (IF בלבד)
@@ -225,16 +260,12 @@ def plot_mean_std(mu_if: np.ndarray, std_if: np.ndarray, top_k: int = 10):
     x = np.arange(N)
 
     plt.figure(figsize=(11, 6))
-
-    # ציור mean ו-std כעמודות
     plt.bar(x - 0.2, mu_if, width=0.4, color='skyblue', alpha=0.7, label='Mean (μ)')
     plt.bar(x + 0.2, std_if, width=0.4, color='orange', alpha=0.7, label='Std Dev (σ)')
 
-    # הדגשת חריגים לפי mean
     top_mean_idx = np.argsort(-mu_if)[:top_k]
     plt.scatter(top_mean_idx, mu_if[top_mean_idx], color='red', s=80, label=f'Top {top_k} Mean')
 
-    # הדגשת חריגים לפי std
     top_std_idx = np.argsort(-std_if)[:top_k]
     plt.scatter(top_std_idx, std_if[top_std_idx], color='purple', s=80, label=f'Top {top_k} Std')
 
@@ -246,6 +277,7 @@ def plot_mean_std(mu_if: np.ndarray, std_if: np.ndarray, top_k: int = 10):
     plt.tight_layout()
     plt.show()
 
+
 def main():
     # UTF-8 למסופים מסוימים
     try:
@@ -254,6 +286,7 @@ def main():
         pass
 
     args = parse_args()
+    args = _ensure_dynhat_defaults(args)
     device = torch.device(args.device)
 
     # -----------------------------------------------------------
@@ -275,16 +308,19 @@ def main():
         workers=args.workers,
         window=args.window,
     )  # torch.Tensor [N, T, F]
-    print("✅ embedding_matrix shape:", tuple(embedding_matrix.shape))
+    print("✅ embedding_matrix shape:", tuple(embedding_matrix.shape))  # [N, T, F]
+
+    # נקבע תמיד את nfeat & num_nodes לפי ה-embedding_matrix כדי למנוע None
+    args.nfeat = int(embedding_matrix.shape[-1])     # F
+    args.num_nodes = int(embedding_matrix.shape[0])  # N
 
     # -----------------------------------------------------------
     # שלב 2: טעינת גרף/פיצ'רים/לייבלים + ספליטים (פורמט custom_out)
     # -----------------------------------------------------------
-
     adj, features_sp, labels_np, idx_train, idx_val, idx_test = load_citation_data(
-        dataset_str="dblpv13",   # נשאר לחתימה
+        dataset_str="dblpv13",
         use_feats=True,
-        data_path=args.data_root   # ### תיקון: היה cli.data_root
+        data_path=args.data_root
     )
 
     edge_index, _ = from_scipy_sparse_matrix(adj)
@@ -298,12 +334,16 @@ def main():
     if labels.dtype is not torch.long:
         labels = labels.long()
 
+    # num_classes / nclass לטובת כל מימוש
+    args.num_classes = int(labels.max().item() + 1)
+    if not hasattr(args, "nclass"):
+        args.nclass = args.num_classes
+
+    print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.nclass}")
+
     # -----------------------------------------------------------
     # שלב 3: מודל Dynhat + אימון
     # -----------------------------------------------------------
-    setattr(args, "num_nodes", int(features.shape[0]))
-    setattr(args, "num_classes", int(labels.max().item() + 1))
-
     model = Dynhat(args, time_length=T_bins).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -349,15 +389,12 @@ def main():
             att_output = att_output.unsqueeze(1)        # [N, 1, C]
 
     # -----------------------------------------------------------
-    # שלב 5: IF+LOF על וקטור מאוחד (שיטוח [T,C] לכל צומת) — (נשאר כמו שהיה)
+    # שלב 5: IF+LOF על וקטור מאוחד (שיטוח [T,C] לכל צומת)
     # -----------------------------------------------------------
     N_eval, T_eval = att_output.shape[0], att_output.shape[1]  # [N, T, C]
     C_eval = att_output.shape[2]
-
-    # ודא צורה [N, T, C]
     assert att_output.ndim == 3, "att_output חייב להיות [N, T, C] לניתוח טמפורלי פר-חותמת זמן"
 
-    # מיכלים לוקטורי ציונים טמפורליים
     AS_if  = np.zeros((N_eval, T_eval), dtype=np.float32)  # AS_i^IF(t)
     AS_lof = np.zeros((N_eval, T_eval), dtype=np.float32)  # AS_i^LOF(t)
 
@@ -365,14 +402,11 @@ def main():
     lof_k  = args.lof_n_neighbors
 
     for t in range(T_eval):
-        # X_t: אמבדינגים/לוגיטים בזמן t, צורה [N, C]
         X_t = att_output[:, t, :].detach().cpu().numpy()
 
-        # נרמול פר-זמן (מומלץ כדי לא “לשבור” השוואות בין T שונים)
         scaler_t = MinMaxScaler()
         X_t_scaled = scaler_t.fit_transform(X_t)
 
-        # Isolation Forest בזמן t
         if_clf_t = IsolationForest(
             n_estimators=100,
             contamination=contam,
@@ -380,26 +414,22 @@ def main():
             n_jobs=-1
         )
         if_clf_t.fit(X_t_scaled)
-        # החלטנו על סימן אחיד: גדול = יותר חריג
         AS_if[:, t] = -if_clf_t.decision_function(X_t_scaled)
 
-        # LOF בזמן t (novelty=False → ציונים על דאטן האימון)
         lof_t = LocalOutlierFactor(
             n_neighbors=lof_k,
             contamination=contam,
             novelty=False,
             n_jobs=-1
         )
-        lof_labels_t = lof_t.fit_predict(X_t_scaled)
+        _ = lof_t.fit_predict(X_t_scaled)
         AS_lof[:, t]  = -(lof_t.negative_outlier_factor_)  # גדול = יותר חריג
 
-    # פרופילים סטטיסטיים פר-צומת על פני הזמן (ממוצע ו-STD)
     mu_if  = AS_if.mean(axis=1)
     std_if = AS_if.std(axis=1, ddof=0)
     mu_lof  = AS_lof.mean(axis=1)
     std_lof = AS_lof.std(axis=1, ddof=0)
 
-    # אופציונלי: Top-K לפי ממוצע IF/LOF (דוגמה)
     K = max(1, min(args.topk, N_eval))
     top_if_idx  = np.argsort(-mu_if)[:K]
     top_lof_idx = np.argsort(-mu_lof)[:K]
@@ -408,7 +438,6 @@ def main():
     print("Top IF (by mean over time):", top_if_idx.tolist())
     print("Top LOF (by mean over time):", top_lof_idx.tolist())
 
-    # אם תרצי לשמור לפוסט-אנליזה/גרפים:
     temporal_anomaly_package = {
         "AS_if": AS_if,        # shape [N, T]
         "AS_lof": AS_lof,      # shape [N, T]
@@ -419,13 +448,11 @@ def main():
     }
 
     plot_mean_std(mu_if, std_if, top_k=20)
-
     plot_mean_std(mu_lof, std_lof, top_k=20)
 
     # -----------------------------------------------------------
     # שלב 6: Stage 4 — Noise Injection Validation (TPR/FPR) אחרי IF+LOF
     # -----------------------------------------------------------
-    # בניית גרף NX מתוך adj אם אין לך כבר NX מוכן
     G_nx = nx.DiGraph()
     rows, cols = adj.nonzero()
     G_nx.add_nodes_from(range(adj.shape[0]))
