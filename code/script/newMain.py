@@ -44,6 +44,9 @@ def parse_args():
     p.add_argument("--window", type=int, default=10, help="Word2Vec window")
     p.add_argument("--t-max", type=int, default=None,
                    help="אופציונלי: שימוש רק ב-T הראשונים (לבדיקות/קיצור)")
+
+    p.add_argument("--manifold", type=str, default="Hyperboloid",
+               help="שם המניפולד למודל Dynhat (למשל: 'lorentz', 'poincare', 'euclidean')")
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
     p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
