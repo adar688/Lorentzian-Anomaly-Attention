@@ -55,6 +55,7 @@ def parse_args():
                    help="ערך עקמומיות התחלתי |K| (לדוגמה 1.0). חלק מהיישומים קוראים לזה c או c0")
     p.add_argument("--c0", type=float, default=1.0,
                    help="שם אלטרנטיבי לעקמומיות התחלתית אם המודל משתמש בשם זה")
+    
 
     # היפר־פרמטרים של Dynhat
     p.add_argument("--nhid", type=int, default=64, help="גודל השכבה החבויה (hidden size)")
@@ -69,6 +70,8 @@ def parse_args():
                    help="להשתמש ב-bias (1) או לא (0) בשכבות שרלוונטיות")
     p.add_argument("--residual", action="store_true", help="לאפשר חיבורי residual אם קיים במודל")
     p.add_argument("--batch-norm", action="store_true", help="לאפשר BatchNorm אם קיים במודל")
+    p.add_argument("--nfeat", type=int, default=None,
+               help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
 
     # אימון
     p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
@@ -277,6 +280,7 @@ def main():
     # -----------------------------------------------------------
     # שלב 2: טעינת גרף/פיצ'רים/לייבלים + ספליטים (פורמט custom_out)
     # -----------------------------------------------------------
+
     adj, features_sp, labels_np, idx_train, idx_val, idx_test = load_citation_data(
         dataset_str="dblpv13",   # נשאר לחתימה
         use_feats=True,
