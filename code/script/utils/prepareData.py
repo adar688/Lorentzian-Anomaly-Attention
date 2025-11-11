@@ -33,7 +33,7 @@ except Exception:
     pass
 
 # --- IO paths ---
-INPUT_CSV = Path("script/data/final_filtered_by_fos_and_reference_100_nodes.csv")
+INPUT_CSV = Path("script/data/final_filtered_by_fos_and_reference.csv")
 OUTPUT_DIR = Path("script/data/custom_out")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
