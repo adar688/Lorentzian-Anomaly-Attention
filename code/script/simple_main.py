@@ -28,36 +28,44 @@ from script.utils.dataUtils import load_citation_data  # מחזיר adj, feature
 def parse_args():
     p = argparse.ArgumentParser(description="Simple Dynhat run with dynamic Node2Vec + temporal attention (CE only).")
 
-    # נתיבי קלט
-    p.add_argument("--data-root", type=str, default="script/data/custom_out",
-                   help="תיקייה עם manifest.json + snapshots.npz + קבצי הגרף")
+    # --- Paths ---
+    p.add_argument("--data-root", type=str, default="script/data/custom_out")
 
-    # Node2Vec
+    # --- Node2Vec ---
     p.add_argument("--emb-dim", type=int, default=128)
     p.add_argument("--walk-length", type=int, default=30)
     p.add_argument("--num-walks", type=int, default=200)
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--window", type=int, default=10)
-    p.add_argument("--t-max", type=int, default=None, help="אופציונלי: שימוש רק ב-T הראשונים")
+    p.add_argument("--t-max", type=int, default=None)
 
-    # Dynhat
+    # --- Dynhat-required args (החשובים שחסרו) ---
+    p.add_argument("--manifold", type=str, default="Hyperboloid")        # ← נדרש ע"י Dynhat
+    p.add_argument("--fix_curvature", action="store_true", default=False)
+    p.add_argument("--curvature", type=float, default=1.0)
+    p.add_argument("--c0", type=float, default=1.0)
+
     p.add_argument("--nhid", type=int, default=32)
-    p.add_argument("--nout", type=int, default=32)  # פרמטר שמולבש ל-args; Dynhat משתמש ב-nhid (+1 ל-agg)
-    p.add_argument("--heads", type=int, default=1)
+    p.add_argument("--nout", type=int, default=32)
+    p.add_argument("--heads", type=int, default=1)                        # structural heads
     p.add_argument("--temporal_attention_layer_heads", type=int, default=1)
     p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--aggregation", type=str, default="att", choices=["att"])
 
-    # אימון
+    # שכבת הזמן של Dynhat מגדירה TemporalAttentionLayer ומצפה לשדה seq_model לשם בלבד
+    p.add_argument("--seq-model", dest="seq_model", type=str, default="Attention")
+
+    # --- Training ---
     p.add_argument("--max-epoch", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=5e-4)
-    p.add_argument("--norm-scale", type=float, default=0.1, help="מכפיל עדין אחרי L2 normalize")
+    p.add_argument("--norm-scale", type=float, default=0.1)
 
-    # מכשיר
+    # --- Device ---
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     return p.parse_args()
+
 
 
 # ===============
