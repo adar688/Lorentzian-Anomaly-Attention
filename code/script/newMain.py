@@ -27,12 +27,46 @@ from script.utils.dynamic_node2vec import (
 from script.utils.dataUtils import load_citation_data  # המימוש המינימלי שכתבנו
 
 # === אנליזה ואבחון ===
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler  # נשאר ל-Stage-4 (אפשרי)
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from scipy.stats import spearmanr
 import pandas as pd
 
+# ==============================
+#    Utilities (NEW)
+# ==============================
+def dbg_stats(name, X):
+    """מדפיס סטטוס finite ושונות עבור טנסור 2D/3D."""
+    X = np.asarray(X)
+    fin = np.isfinite(X)
+    print(f"[DBG] {name}: shape={X.shape}, finite%={fin.mean()*100:.2f}%")
+    if X.ndim == 2:  # [N, C]
+        row_std = X.std(axis=1)
+        col_std = X.std(axis=0)
+        print(f"[DBG] {name}: rows std>0%={(row_std>0).mean()*100:.2f}%, cols std>0%={(col_std>0).mean()*100:.2f}%")
+    elif X.ndim == 3:  # [N, T, C]
+        N,T,C = X.shape
+        per_t_fin = [np.isfinite(X[:,t,:]).mean()*100 for t in range(T)]
+        per_t_cols_std = [(X[:,t,:].std(axis=0)>0).mean()*100 for t in range(T)]
+        print(f"[DBG] {name}: finite% per t: {[round(p,2) for p in per_t_fin]}")
+        print(f"[DBG] {name}: %cols std>0 per t: {[round(p,2) for p in per_t_cols_std]}")
+
+def safe_zscore(X, eps=1e-8):
+    """Z-Score בטוח פר-עמודה עם ε כדי למנוע חלוקה באפס; NaN/Inf נהפכים ל-0 בסוף."""
+    X = np.asarray(X, dtype=float)
+    X = np.where(np.isfinite(X), X, np.nan)
+    mu = np.nanmean(X, axis=0, keepdims=True)
+    sd = np.nanstd(X, axis=0, keepdims=True)
+    sd = np.where(sd < eps, eps, sd)
+    Z = (X - mu) / sd
+    return np.where(np.isfinite(Z), Z, 0.0)
+
+def drop_constant_cols(X, eps=1e-12):
+    """מוריד עמודות עם שונות ~0; מחזיר מטריצה מסוננת ומסכת עמודות."""
+    sd = X.std(axis=0)
+    keep = sd > eps
+    return (X[:, keep], keep)
 
 # ==============================
 #    ארגומנטים
@@ -97,6 +131,7 @@ def parse_args():
     p.add_argument("--max-epoch", type=int, default=32, help="מספר אפוקים לאימון Dynhat")
     p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
     p.add_argument("--weight-decay", type=float, default=5e-4, help="למידה - Adam weight decay")
+    p.add_argument("--norm-scale", type=float, default=1.0, help="מקדם סקייל אחרי F.normalize (במקום *0.1)")
 
     # מכשיר ושמירה
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
@@ -148,20 +183,17 @@ def _ensure_dynhat_defaults(args):
         if not hasattr(args, k):
             setattr(args, k, v)
 
-    # התאמות שמות נפוצות
     if not hasattr(args, "heads") and hasattr(args, "nheads"):
         args.heads = args.nheads
     if isinstance(getattr(args, "bias", True), int):
         args.bias = bool(args.bias)
     if not hasattr(args, "c"):
-        # ערך c לארגומנטים, נשתמש בו גם כ-fallback למחלקה אם צריך
         args.c = float(getattr(args, "curvature", getattr(args, "c0", 1.0)))
 
     return args
 
-
 # ==============================
-#   כלי אבחון / תוצרים
+#   כלי עזר לפלטים
 # ==============================
 def _summ(name, arr):
     arr = np.asarray(arr).ravel()
@@ -185,7 +217,6 @@ def _save_hist(arr, fname, bins=40, title=None):
     plt.xlabel("score"); plt.ylabel("count"); plt.tight_layout()
     plt.savefig(fname); plt.close()
     print(f"💾 saved: {fname}")
-
 
 # ========================================================
 #  Stage 4 unified: validate_with_noise_injection (IF בלבד)
@@ -214,11 +245,9 @@ def validate_with_noise_injection(
     results_per_iter = []
 
     for it in range(n_iters):
-        # 1) זמן הזרקה אקראי + כמות רעש לפי k%
         t_i = int(rng.integers(low=0, high=T))
         n_noise_nodes = max(1, int(round(k_percent * N)))
 
-        # 2) גרף רועש: הוספת צמתי רעש + קשתות אקראיות
         G_noisy = copy.deepcopy(G_original)
         original_N = G_noisy.number_of_nodes()
         new_node_ids = list(range(original_N, original_N + n_noise_nodes))
@@ -230,7 +259,6 @@ def validate_with_noise_injection(
                 if rng.random() < connect_prob:
                     G_noisy.add_edge(target, node)
 
-        # 3) פיצ'רים: רעש “מופיע” רק ב-t_i (בשאר הזמנים 0)
         mu = embedding_matrix.mean(dim=(0, 1)).to(device)  # [F]
         noise_std = 0.1
         noise_tensor = mu + noise_std * torch.randn((n_noise_nodes, F), device=device)
@@ -245,13 +273,11 @@ def validate_with_noise_injection(
             noisy_slices.append(feats_t)
         node_features_over_time_noisy = torch.stack(noisy_slices, dim=1).to(device)  # [N', T, F]
 
-        # 4) edge_index_noisy מ-NX
         G_noisy_simple = nx.DiGraph()
         G_noisy_simple.add_nodes_from(G_noisy.nodes())
         G_noisy_simple.add_edges_from(G_noisy.edges())
         edge_index_noisy = from_networkx(G_noisy_simple).edge_index.to(device)
 
-        # 5) Forward לאורך T → “קריאת רצף” (seq_model)
         with torch.no_grad():
             outputs_t = []
             for t in range(T):
@@ -265,18 +291,16 @@ def validate_with_noise_injection(
             assert Tp == T, "שכבת הרצף צריכה לשמר את ציר הזמן"
             X_flat_noisy = att_output_noisy.reshape(Np, Tp * Fp).detach().cpu().numpy()  # [N', T*C]
 
-        # 6) IF על וקטור משוטח (ציון יחיד לצומת)
+        # אפשר להשאיר MinMax כאן — זה שלב ולידציה נפרד
         scaler = MinMaxScaler()
         X_scaled = scaler.fit_transform(X_flat_noisy)
         clf = IsolationForest(n_estimators=100, contamination=contamination, random_state=random_state)
         clf.fit(X_scaled)
         anomaly_scores = -clf.decision_function(X_scaled)  # גדול → חריג יותר
 
-        # פיצול ציונים
         real_scores = anomaly_scores[:original_N]
         fake_scores = anomaly_scores[original_N:]
 
-        # 7) סף על בסיס המקוריים (אחוזון 95) → TPR/FPR
         thr = np.percentile(real_scores, 95) if real_scores.size else np.nan
         real_flags = (real_scores > thr) if real_scores.size else np.array([])
         fake_flags = (fake_scores > thr) if fake_scores.size else np.array([])
@@ -309,27 +333,22 @@ def validate_with_noise_injection(
     }
     return {"summary": summary, "results_per_iter": results_per_iter}
 
-
 # ==============================
 #   התאמת nhid אוטומטית (רשות)
 # ==============================
 def _auto_fit_nhid_and_rebuild(model_cls, args, device, edge_index, probe_x, time_length, max_tries=2):
-    """
-    מנסה להריץ צעד forward אחד. אם מתקבלת שגיאת כפל מטריצות (mobius_matvec),
-    מפענח את הממדים מהשגיאה, מתאים args.nhid = U - 1, ובונה מודל מחדש.
-    """
     for _ in range(max_tries):
         model = model_cls(args, time_length=time_length).to(device)
         try:
             with torch.no_grad():
                 _ = model(edge_index, x=probe_x)  # צעד בדיקה יחיד
-            return model  # הצליח, אין התאמות נדרשות
+            return model
         except RuntimeError as e:
             msg = str(e)
             m = re.search(r"mat1 and mat2 shapes cannot be multiplied \(\d+x(\d+) and (\d+)x(\d+)\)", msg)
             if m is None:
-                raise  # שגיאה אחרת – מעבירים הלאה
-            u_dim = int(m.group(1))  # ה-U מהצורה (N x U)
+                raise
+            u_dim = int(m.group(1))
             suggested_nhid = max(1, u_dim - 1)
             if getattr(args, "nhid", None) == suggested_nhid:
                 raise
@@ -337,7 +356,6 @@ def _auto_fit_nhid_and_rebuild(model_cls, args, device, edge_index, probe_x, tim
             args.nhid = suggested_nhid
             continue
     raise RuntimeError("Failed to auto-fit nhid after probe attempts.")
-
 
 # ==============================
 #   Main
@@ -374,12 +392,15 @@ def main():
     )  # torch.Tensor [N, T, F]
     print("✅ embedding_matrix shape:", tuple(embedding_matrix.shape))  # [N, T, F]
 
+    # דיבוג: סטטוס אמבדינגים גולמיים
+    dbg_stats("embedding_matrix raw", embedding_matrix.detach().cpu().numpy())
+
     # קיבוע nfeat & num_nodes לפי אמבדינגים
     args.nfeat = int(embedding_matrix.shape[-1])     # F
     args.num_nodes = int(embedding_matrix.shape[0])  # N
 
     # -----------------------------------------------------------
-    # שלב 2: טעינת גרף/פיצ'רים/לייבלים + ספליטים (פורמט custom_out)
+    # שלב 2: טעינת גרף/פיצ'רים/לייבלים + ספליטים
     # -----------------------------------------------------------
     adj, features_sp, labels_np, idx_train, idx_val, idx_test = load_citation_data(
         dataset_str="dblpv13",
@@ -387,7 +408,6 @@ def main():
         data_path=args.data_root
     )
 
-    # ======== DEBUG BLOCK: class counts overall + per split ========
     print("\n[DEBUG] labels_np shape:", labels_np.shape, "dtype:", getattr(labels_np, "dtype", type(labels_np)))
     labels_vec = labels_np
     if getattr(labels_vec, "ndim", 1) == 2 and labels_vec.shape[1] > 1:
@@ -414,39 +434,33 @@ def main():
             print("[DEBUG] failed reading label_binarizer.json:", e)
     else:
         print("[DEBUG] label_binarizer.json not found at", lb_path)
-    # ======== END DEBUG BLOCK ========
 
     edge_index, _ = from_scipy_sparse_matrix(adj)
     features = torch.FloatTensor(features_sp.todense()).to(device)
     labels = torch.LongTensor(labels_np).to(device)
     edge_index = edge_index.to(device)
 
-    # לייבלים – ודא אינדקסים (לא one-hot)
     if labels.dim() == 2 and labels.size(1) > 1:
         labels = labels.argmax(1)
     if labels.dtype is not torch.long:
         labels = labels.long()
 
-    # num_classes / nclass
     args.num_classes = int(labels.max().item() + 1)
     if not hasattr(args, "nclass"):
         args.nclass = args.num_classes
 
-    # בעיית מחלקה אחת → אין CrossEntropy
     single_class_problem = args.num_classes < 2
 
     print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.nclass}, nout={args.nout}")
 
-    # fallback: ערך עקמומיות ברמת המחלקה (אם Dynhat.__init__ משתמש לפני הגדרה)
     Dynhat.c = float(getattr(args, "c", getattr(args, "curvature", getattr(args, "c0", 1.0))))
 
     # -----------------------------------------------------------
     # שלב 3: מודל Dynhat + אימון עם ראש סיווג
     # -----------------------------------------------------------
-    probe_x = embedding_matrix[:, 0, :].to(device)  # פריים זמן בודד כבדיקה
+    probe_x = embedding_matrix[:, 0, :].to(device)
     model = _auto_fit_nhid_and_rebuild(Dynhat, args, device, edge_index, probe_x, time_length=T_bins).to(device)
 
-    # ראש סיווג: מקרין מ־C=nhid+1 ל־num_classes
     cls_head = torch.nn.Linear(args.nhid + 1, args.num_classes).to(device)
 
     optimizer = torch.optim.Adam(
@@ -466,19 +480,26 @@ def main():
             temporal_outputs = []
             for t in range(T_bins):
                 x_t = embedding_matrix[:, t, :].to(device)
-                # guard נגד NaN/Inf + נרמול עדין
+
+                # ניקוי קודם ל-normalize
                 x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
-                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * 0.1
+                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
+
                 h_t = model(edge_index, x=x_t)           # [N, C]
                 h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
                 temporal_outputs.append(h_t)
+
+                # דיבוג חד-פעמי לפריים ראשון
+                if epoch == 0 and t == 0:
+                    dbg_stats("x_t after normalize (*norm-scale)", x_t.detach().cpu().numpy())
+                    dbg_stats("h_t from Dynhat (t=0)", h_t.detach().cpu().numpy())
 
             X = torch.stack(temporal_outputs, dim=1)     # [N, T, C]
             att = model.seq_model(X)                     # [N, T, C] או [N, C]
             if att.ndim == 2:
                 att = att.unsqueeze(1)
 
-            feat_last = att[:, -1, :]                    # [N, C] (לפני ראש הסיווג)
+            feat_last = att[:, -1, :]                    # [N, C]
             logits = cls_head(feat_last)                 # [N, num_classes]
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1e6, neginf=-1e6)
 
@@ -493,8 +514,14 @@ def main():
             torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(cls_head.parameters()), max_norm=1.0)
             optimizer.step()
 
+            # דפוס גראד
+            total_norm = 0.0
+            for p in list(model.parameters()) + list(cls_head.parameters()):
+                if p.grad is not None:
+                    total_norm += p.grad.data.norm(2).item()
+
             train_losses.append(loss.item())
-            print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
+            print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f} | grad_norm={total_norm:.6f}")
     elif not single_class_problem and args.max_epoch is None:
         print("ℹ Training skipped because --max-epoch=None (set a value to train).")
     else:
@@ -502,7 +529,7 @@ def main():
         model.eval(); cls_head.eval()
 
     # -----------------------------------------------------------
-    # === חישוב att_output במצב eval כדי שישמש ל-IF + LOF ===
+    # === חישוב att_output (Eval) עבור IF/LOF ===
     # -----------------------------------------------------------
     model.eval(); cls_head.eval()
     with torch.no_grad():
@@ -510,7 +537,7 @@ def main():
         for t in range(T_bins):
             x_t = embedding_matrix[:, t, :].to(device)
             x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
-            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * 0.1
+            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
             h_t = model(edge_index, x=x_t)              # [N, C]
             h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
             outs.append(h_t)
@@ -519,53 +546,84 @@ def main():
         if att_output.ndim == 2:
             att_output = att_output.unsqueeze(1)        # [N, 1, C]
 
+    # דיבוג: סטטוס att_output
+    dbg_stats("att_output eval", att_output.detach().cpu().numpy())
+
     # -----------------------------------------------------------
-    # שלב 5: IF+LOF טמפורלי
+    # שלב 5: IF+LOF טמפורלי (רובוסטי)
     # -----------------------------------------------------------
     N_eval, T_eval, C_eval = att_output.shape
-    # התאמות בטוחות ל-LOF/contamination כדי למנוע אזהרות/כשלים על N קטן
     lof_k = max(2, min(args.lof_n_neighbors, N_eval - 1))
     contam = min(max(args.contamination, max(1, int(0.02 * N_eval)) / N_eval), 0.20)
     print(f"\n📏 Shapes: N={N_eval}, T={T_eval}, C={C_eval}  |  LOF.k={lof_k}, IF.contamination={contam:.4f}")
 
-    AS_if  = np.zeros((N_eval, T_eval), dtype=np.float32)  # AS_i^IF(t)
-    AS_lof = np.zeros((N_eval, T_eval), dtype=np.float32)  # AS_i^LOF(t)
+    AS_if  = np.full((N_eval, T_eval), np.nan, dtype=np.float32)  # NaN כדי שלא יזהם ממוצעים
+    AS_lof = np.full((N_eval, T_eval), np.nan, dtype=np.float32)
 
+    n_valid_t = 0
     for t in range(T_eval):
         X_t = att_output[:, t, :].detach().cpu().numpy()
 
-        # ניקוי NaN/Inf לפני סקיילר/LOF
+        # ניקוי ראשוני
         if not np.isfinite(X_t).all():
             n_bad = np.size(X_t) - np.isfinite(X_t).sum()
-            print(f"[WARN] Found {n_bad} non-finite entries at t={t}. Applying nan_to_num.")
-            X_t = np.nan_to_num(X_t, nan=0.0, posinf=1e6, neginf=-1e6)
+            print(f"[WARN] Found {n_bad} non-finite entries at t={t}. Fixing with zscore guards.")
+        # Zscore בטוח + הסרת עמודות קבועות
+        X_t = safe_zscore(X_t)
+        X_t, keep = drop_constant_cols(X_t)
 
-        scaler_t = MinMaxScaler()
-        X_t_scaled = scaler_t.fit_transform(X_t)
+        if X_t.shape[1] < 2:
+            print(f"[INFO] t={t}: not enough informative features after filtering (C'={X_t.shape[1]}). Skipping.")
+            continue
 
+        # IF
         if_clf_t = IsolationForest(
             n_estimators=100,
             contamination=contam,
             random_state=args.random_state,
             n_jobs=-1
         )
-        if_clf_t.fit(X_t_scaled)
-        AS_if[:, t] = -if_clf_t.decision_function(X_t_scaled)
+        s_if = -if_clf_t.fit(X_t).decision_function(X_t)
+        rng_if = s_if.max() - s_if.min()
+        if rng_if > 1e-12:
+            s_if = (s_if - s_if.min()) / rng_if
+        else:
+            s_if = np.full_like(s_if, np.nan)
 
+        # LOF
+        k_here = min(lof_k, max(2, X_t.shape[0]-1))
         lof_t = LocalOutlierFactor(
-            n_neighbors=lof_k,
+            n_neighbors=k_here,
             contamination=contam,
             novelty=False,
             n_jobs=-1
         )
-        _ = lof_t.fit_predict(X_t_scaled)
-        AS_lof[:, t] = -(lof_t.negative_outlier_factor_)
+        _ = lof_t.fit_predict(X_t)
+        s_lof = -(lof_t.negative_outlier_factor_)
+        rng_lof = s_lof.max() - s_lof.min()
+        if rng_lof > 1e-12:
+            s_lof = (s_lof - s_lof.min()) / rng_lof
+        else:
+            s_lof = np.full_like(s_lof, np.nan)
 
-    # פרופילים סטטיסטיים פר-צומת על פני הזמן (ממוצע ו-STD)
-    mu_if  = AS_if.mean(axis=1)
-    std_if = AS_if.std(axis=1, ddof=0)
-    mu_lof  = AS_lof.mean(axis=1)
-    std_lof = AS_lof.std(axis=1, ddof=0)
+        AS_if[:, t]  = s_if
+        AS_lof[:, t] = s_lof
+        n_valid_t += 1
+
+    if n_valid_t == 0:
+        print("⚠ No valid timesteps for anomaly scoring (all t were constant/invalid).")
+    else:
+        print(f"✅ Valid timesteps for anomaly scoring: {n_valid_t}/{T_eval}")
+
+    # פרופילים סטטיסטיים פר-צומת (להתעלם מ-NaN)
+    mu_if   = np.nanmean(AS_if,  axis=1)
+    std_if  = np.nanstd( AS_if,  axis=1)
+    mu_lof  = np.nanmean(AS_lof, axis=1)
+    std_lof = np.nanstd( AS_lof, axis=1)
+
+    # כמה t תקפים לכל צומת
+    valid_counts = np.sum(np.isfinite(AS_if) | np.isfinite(AS_lof), axis=1)
+    print(f"[INFO] mean valid t per node: {valid_counts.mean():.2f} / {T_eval}")
 
     # Top-K
     K = max(1, min(args.topk, N_eval))
@@ -574,23 +632,29 @@ def main():
     _print_topk("LOF by mean (μ)", mu_lof, k=min(20, N_eval))
     _print_topk("LOF by std (σ)",  std_lof, k=min(20, N_eval))
 
-    # קורלציה בין IF ל-LOF (בממוצעים)
+    # קורלציה בין IF ל-LOF (בממוצעים) — רק אם יש שונות
     try:
-        rho, p = spearmanr(mu_if, mu_lof)
-        print(f"\n🔗 Spearman(IF.mean, LOF.mean) = {rho:.4f}  (p={p:.2e})")
+        if np.all(~np.isfinite(mu_if)) or np.all(~np.isfinite(mu_lof)):
+            print("\n🔗 Spearman skipped: non-finite vectors.")
+        elif (np.nanstd(mu_if) < 1e-12) or (np.nanstd(mu_lof) < 1e-12):
+            print("\n🔗 Spearman skipped: constant vectors.")
+        else:
+            rho, p = spearmanr(mu_if, mu_lof, nan_policy='omit')
+            print(f"\n🔗 Spearman(IF.mean, LOF.mean) = {rho:.4f}  (p={p:.2e})")
     except Exception as e:
         print("Spearman failed:", e)
 
     # סטטיסטיקות התפלגות
-    _summ("IF.mean over nodes",  mu_if)
-    _summ("IF.std  over nodes",  std_if)
-    _summ("LOF.mean over nodes", mu_lof)
-    _summ("LOF.std  over nodes", std_lof)
+    _summ("IF.mean over nodes",  np.nan_to_num(mu_if, nan=0.0))
+    _summ("IF.std  over nodes",  np.nan_to_num(std_if, nan=0.0))
+    _summ("LOF.mean over nodes", np.nan_to_num(mu_lof, nan=0.0))
+    _summ("LOF.std  over nodes", np.nan_to_num(std_lof, nan=0.0))
 
     # שמירה לקבצים (CSV + היסטוגרמות)
     df_summary = pd.DataFrame({
         "mu_if":  mu_if,  "std_if": std_if,
         "mu_lof": mu_lof, "std_lof": std_lof,
+        "valid_t": valid_counts
     })
     df_summary.index.name = "node_id"
     df_summary.to_csv("temporal_anomaly_summary.csv")
@@ -617,14 +681,13 @@ def main():
         k_percent=args.noise_percent,
         connect_prob=args.noise_connect_prob,
         n_iters=args.noise_iters,
-        contamination=contam,                # שימוש באותה התאמה בטוחה
+        contamination=contam,
         random_state=args.random_state,
     )
 
     print("\n=== Stage-4 Validation Summary ===")
     print(noise_res["summary"])
 
-    # מדדי הבדל פשוטים להבנה
     per_iter = noise_res.get("results_per_iter", [])
     if per_iter:
         delta_means = [r["mean_fake_score"] - r["mean_real_score"] for r in per_iter]
@@ -645,7 +708,6 @@ def main():
             "noise_validation": noise_res
         }, args.save_bundle)
         print(f"💾 Saved bundle to: {args.save_bundle}")
-
 
 if __name__ == "__main__":
     main()
