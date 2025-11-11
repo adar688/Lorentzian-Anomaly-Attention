@@ -1,338 +1,796 @@
 # -*- coding: utf-8 -*-
+
 """
-newMain.py
-==========
-זרימה מלאה:
-1) טוען גרפים סנאפשוטים ומטא-דאטה
-2) מפיק אמבדינגים דינמיים עם Node2Vec (N, T, F)
-3) טוען adjacency + labels ל-PyG
-4) בונה Dynhat (בלי לשנות את הקובץ שלו) + ראש סיווג חיצוני Linear(C -> num_classes)
-5) מאמן עם CrossEntropy על הלוגיטים (לא על תכונות גאומטריות)
-6) ולידציה
-7) מחשב ציוני אנומליה אחרי האימון (IF)
+מריצים את הקובץ הזה לאחר שטענו את הדאטה סט ועשינו לו עיבוד.
+כאן כבר מתחילים לעבוד איתו: טוענים את הקבצים שעיבדנו, מפיקים אמבדינגים דינמיים (Node2Vec),
+מריצים Dynhat, מחשבים IF/LOF טמפורלי, ומדפיסים/שומרים מדדים להבנת התוצאות.
 """
 
 import os
 import sys
-import math
-import copy
-import json
-import ast
-import pickle
-import random
 import argparse
-from pathlib import Path
-from collections import defaultdict
-
-import numpy as np
-import pandas as pd
+import copy
+import re
+import json
 import torch
 import torch.nn.functional as F
+import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
+from torch_geometric.utils import from_scipy_sparse_matrix, from_networkx
+from models.Dynhat import Dynhat
 
-from sklearn.ensemble import IsolationForest
+from script.utils.dynamic_node2vec import (
+    load_manifest_and_snapshots,   # מצפה ל-manifest.json + snapshots.npz
+    build_dynamic_node2vec         # בונה Tensor [N, T, F]
+)
+from script.utils.dataUtils import load_citation_data  # המימוש המינימלי שכתבנו
+
+# === אנליזה ואבחון ===
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
+from scipy.stats import spearmanr
+import pandas as pd
 
-from torch_geometric.utils import from_networkx, from_scipy_sparse_matrix
 
-# ========= קונפיג =========
-try:
-    from config import args  # אצלך בפרויקט
-except Exception as e:
-    # גיבוי מינימלי אם אין config.args
-    class _Obj: pass
-    args = _Obj()
-    args.device = "cuda" if torch.cuda.is_available() else "cpu"
-    args.Time_stamps = 10
-    args.nfeat = 128
-    args.max_epoch = 32
-    args.dropout = 0.0
-    args.num_walks = 100
-    args.workers = 2
-    args.heads = 1
-    args.temporal_attention_layer_heads = 1
-    args.manifold = "Hyperboloid"
-    args.nhid = 32
-    args.nout = 32
-    args.seq_model = "TemporalAttention"
-    args.fix_curvature = True
-    args.validation_iteration = 0
-    args.graph_type = "None"
+# ==============================
+#    ארגומנטים
+# ==============================
+def parse_args():
+    p = argparse.ArgumentParser(description="Unified main: Dynamic Node2Vec + Dynhat + IF/LOF (with diagnostics)")
 
-# ========= ייבוא Dynhat (נתיב גמיש) =========
-_dynhat_import_ok = False
-for candidate in ["models.Dynhat", "model.Dynhat", "script.models.Dynhat"]:
+    # נתיבי קלט
+    p.add_argument("--data-root", type=str, default="script/data/custom_out",
+                   help="תיקייה עם קבצי הפלט של prepareData (manifest.json, snapshots.npz, graph.json, ...)")
+
+    # פרמטרי Node2Vec
+    p.add_argument("--emb-dim", type=int, default=128, help="F: ממד האמבדינג")
+    p.add_argument("--walk-length", type=int, default=30, help="Node2Vec: אורך הליכה")
+    p.add_argument("--num-walks", type=int, default=200, help="Node2Vec: מספר הליכות לצומת")
+    p.add_argument("--workers", type=int, default=2, help="Node2Vec: מספר תהליכי רקע")
+    p.add_argument("--window", type=int, default=10, help="Word2Vec window")
+    p.add_argument("--t-max", type=int, default=None,
+                   help="אופציונלי: שימוש רק ב-T הראשונים (לבדיקות/קיצור)")
+
+    # נרמול קלט לאימון/אינפרנס (גורם כיווץ עדין אחרי L2 normalize)
+    p.add_argument("--norm-scale", type=float, default=0.1, help="מכפיל אחרי normalize כדי לשמור יציבות נומרית")
+
+    # מניפולד/גיאומטריה (דגלים רק למילוי args עבור Dynhat, לא משנים את הקוד שלו)
+    p.add_argument("--manifold", type=str, default="Hyperboloid")
+    p.add_argument("--fix_curvature", action="store_true")
+    p.add_argument("--curvature", type=float, default=1.0)
+    p.add_argument("--c0", type=float, default=1.0)
+
+    # היפר־פרמטרים של Dynhat (נדרש רק כדי למלא args; Dynhat כבר מגדיר פנימית את agg_feat_size)
+    p.add_argument("--nhid", type=int, default=32)
+    p.add_argument("--dropout", type=float, default=0.5)
+    p.add_argument("--attn-dropout", type=float, default=0.0)
+    p.add_argument("--feat-dropout", type=float, default=0.0)
+    p.add_argument("--alpha", type=float, default=0.2)
+    p.add_argument("--nheads", type=int, default=1)
+    p.add_argument("--temporal_attention_layer_heads", type=int, default=1)
+    p.add_argument("--bias", type=int, choices=[0, 1], default=1)
+    p.add_argument("--residual", action="store_true")
+    p.add_argument("--batch-norm", action="store_true")
+    p.add_argument("--aggregation", type=str, default="att", choices=["att", "mean", "sum", "max"])
+    p.add_argument("--nfeat", type=int, default=32)
+    p.add_argument("--nout", type=int, default=32)
+    p.add_argument("--seq-model", dest="seq_model", type=str, default="gru",
+                   choices=["gru", "lstm", "transformer", "none"])
+    p.add_argument("--seq-hidden", dest="seq_hidden", type=int, default=128)
+    p.add_argument("--seq-layers", dest="seq_layers", type=int, default=1)
+    p.add_argument("--seq-dropout", dest="seq_dropout", type=float, default=0.0)
+
+    # אימון
+    p.add_argument("--max-epoch", type=int, default=32, help="מספר אפוקים לאימון Dynhat")
+    p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
+    p.add_argument("--weight-decay", type=float, default=5e-4, help="למידה - Adam weight decay")
+
+    # מכשיר ושמירה
+    p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
+                   help="cuda / cpu")
+    p.add_argument("--save-bundle", type=str, default="",
+                   help="נתיב לשמירת חבילה אחת בסוף (embedding_matrix + graph tensors). ריק = לא שומר.")
+
+    # אנומליות
+    p.add_argument("--contamination", type=float, default=0.05, help="אחוז אנומליות משוער ל-IF/LOF")
+    p.add_argument("--lof-n-neighbors", type=int, default=30, help="k של LOF")
+    p.add_argument("--topk", type=int, default=20, help="Top-K להצגה/ניתוח (לא חובה)")
+
+    # רעש (Stage 4)
+    p.add_argument("--noise-percent", type=float, default=0.1, help="k% צמתי רעש מכלל הצמתים")
+    p.add_argument("--noise-connect-prob", type=float, default=0.5, help="הסתברות חיבור רעש↔מקוריים")
+    p.add_argument("--noise-iters", type=int, default=30, help="מספר איטרציות ולידציה עם רעש")
+    p.add_argument("--random-state", type=int, default=1024, help="זרע רנדומי לשחזוריות")
+
+    return p.parse_args()
+
+
+def _ensure_dynhat_defaults(args):
+    """
+    רשת ביטחון: ממלא דיפולטים אם חסר ארגומנט שה-Dynhat עשוי לבקש.
+    לא דורסת ערכים שכבר קיימים.
+    """
+    defaults = {
+        "nhid": 64,
+        "dropout": 0.0,
+        "attn_dropout": 0.0,
+        "feat_dropout": 0.0,
+        "alpha": 0.2,
+        "nheads": 1,
+        "temporal_attention_layer_heads": 1,
+        "fix_curvature": False,
+        "curvature": 1.0,
+        "c0": 1.0,
+        "bias": True,
+        "residual": False,
+        "batch_norm": False,
+        "manifold": "Hyperboloid",
+        "aggregation": "att",
+        "seq_model": "gru",
+        "seq_hidden": 128,
+        "seq_layers": 1,
+        "seq_dropout": 0.1,
+    }
+    for k, v in defaults.items():
+        if not hasattr(args, k):
+            setattr(args, k, v)
+
+    if not hasattr(args, "heads") and hasattr(args, "nheads"):
+        args.heads = args.nheads
+    if isinstance(getattr(args, "bias", True), int):
+        args.bias = bool(args.bias)
+    if not hasattr(args, "c"):
+        args.c = float(getattr(args, "curvature", getattr(args, "c0", 1.0)))
+    return args
+
+
+# ==============================
+#   כלי אבחון / תוצרים
+# ==============================
+def _summ(name, arr):
+    arr = np.asarray(arr).ravel()
+    if not np.isfinite(arr).any():
+        print(f"\n{name}: (no finite data)")
+        return
+    q = np.percentile(arr[np.isfinite(arr)], [0, 1, 5, 25, 50, 75, 95, 99, 100])
+    print(f"\n{name}:")
+    print(f"  mean={np.nanmean(arr):.6f}  std={np.nanstd(arr):.6f}  min={q[0]:.6f}  p1={q[1]:.6f}  p5={q[2]:.6f}")
+    print(f"  p25={q[3]:.6f}  p50={q[4]:.6f}  p75={q[5]:.6f}  p95={q[6]:.6f}  p99={q[7]:.6f}  max={q[8]:.6f}")
+
+def _print_topk(title, scores, k=10):
+    arr = np.asarray(scores).ravel()
+    if not np.isfinite(arr).any():
+        print(f"\n{title} (no finite data)")
+        return np.array([], dtype=int)
+    k = min(k, len(arr))
+    order = np.argsort(-np.nan_to_num(arr, nan=-1e30))[:k]
+    print(f"\n{title} (Top-{k}):")
+    for rank, idx in enumerate(order, 1):
+        s = float(arr[idx])
+        print(f"  {rank:>2}. node={int(idx):>6}  score={s if np.isfinite(s) else float('nan')}")
+    return order
+
+def _save_hist(arr, fname, bins=40, title=None):
+    a = np.asarray(arr).ravel()
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        print(f"ℹ️  skipped histogram {fname}: no finite data.")
+        return
+    plt.figure(figsize=(8, 4.5))
+    plt.hist(a, bins=bins)
+    if title: plt.title(title)
+    plt.xlabel("score"); plt.ylabel("count"); plt.tight_layout()
+    plt.savefig(fname); plt.close()
+    print(f"💾 saved: {fname}")
+
+def dbg_stats(tag, tensor, per_time=False, max_show=5):
+    x = tensor.detach().cpu().numpy()
+    finite = np.isfinite(x)
+    pct = 100.0 * finite.mean()
+    shp = tuple(x.shape)
+    if per_time and x.ndim == 3:
+        T = x.shape[1]
+        per = []
+        for t in range(T):
+            per.append(100.0 * np.isfinite(x[:, t, :]).mean())
+        print(f"[DBG] {tag}: shape={shp}, finite%={pct:.2f}%, finite% per t: {per[:max_show]} ...")
+    else:
+        print(f"[DBG] {tag}: shape={shp}, finite%={pct:.2f}%")
+
+def dbg_seq_temporal_layer_once(seq_layer, seq_input):
+    print("\n===== TEMPORAL ATTENTION DEBUG =====")
+    dbg_stats("seq_input(N,T,C)", seq_input, per_time=True)
+    # ניסיון לא פולשני להציץ בפרמטרים אופייניים; אם לא קיימים—נדלג
     try:
-        Dynhat = __import__(candidate, fromlist=["Dynhat"]).Dynhat
-        _dynhat_import_ok = True
-        break
+        has_proj = False
+        for nm, p in getattr(seq_layer, 'named_parameters', lambda: [])():
+            if any(k in nm.lower() for k in ['q', 'k', 'v']):
+                has_proj = True; break
+        if has_proj:
+            print("[DBG] Q/K/V projectors detected on TemporalAttentionLayer (names vary) – not printing weights.")
+        else:
+            print("[DBG] Q/K/V projectors not found on TemporalAttentionLayer (looked for common names). Skipping internals and calling forward normally.")
+    except Exception:
+        print("[DBG] Could not iterate parameters safely; skipping.")
+    with torch.no_grad():
+        y = seq_layer(seq_input)
+    dbg_stats("seq_output", y, per_time=True)
+    print("===== END TEMPORAL ATTENTION DEBUG =====\n")
+
+
+# ========================================================
+#  Stage 4 unified: validate_with_noise_injection (IF בלבד)
+# ========================================================
+def validate_with_noise_injection(
+    G_original,
+    embedding_matrix,           # Tensor [N, T, F] – אמבדינגים קיימים (לא מחשבים מחדש)
+    model,                      # Dynhat במצב מאומן
+    T,                          # מספר חותמות זמן
+    k_percent=0.05,             # יחס רעש מכלל הצמתים
+    connect_prob=0.5,           # הסתברות לקשת רעש↔מקוריים
+    n_iters=30,                 # מספר איטרציות
+    contamination=0.05,         # פרמ' IF
+    random_state=42,            # לרפליקציה
+):
+    rng = np.random.default_rng(random_state)
+    torch.manual_seed(random_state)
+
+    device = embedding_matrix.device
+    N, T_actual, F = embedding_matrix.shape
+    assert T == T_actual, "T לא תואם את ממד הזמן של embedding_matrix"
+
+    model.eval()
+
+    tpr_list, fpr_list = [], []
+    results_per_iter = []
+
+    for it in range(n_iters):
+        # 1) זמן הזרקה אקראי + כמות רעש לפי k%
+        t_i = int(rng.integers(low=0, high=T))
+        n_noise_nodes = max(1, int(round(k_percent * N)))
+
+        # 2) גרף רועש
+        G_noisy = copy.deepcopy(G_original)
+        original_N = G_noisy.number_of_nodes()
+        new_node_ids = list(range(original_N, original_N + n_noise_nodes))
+        for node in new_node_ids:
+            G_noisy.add_node(node)
+            for target in range(original_N):
+                if rng.random() < connect_prob:
+                    G_noisy.add_edge(node, target)
+                if rng.random() < connect_prob:
+                    G_noisy.add_edge(target, node)
+
+        # 3) פיצ'רים: רעש “מופיע” רק ב-t_i
+        mu = embedding_matrix.mean(dim=(0, 1)).to(device)  # [F]
+        noise_std = 0.1
+        noise_tensor = mu + noise_std * torch.randn((n_noise_nodes, F), device=device)
+
+        noisy_slices = []
+        for t in range(T):
+            base_t = embedding_matrix[:, t, :]  # [N, F]
+            if t == t_i:
+                feats_t = torch.cat([base_t, noise_tensor], dim=0)  # [N+noise, F]
+            else:
+                feats_t = torch.cat([base_t, torch.zeros_like(noise_tensor)], dim=0)
+            noisy_slices.append(feats_t)
+        node_features_over_time_noisy = torch.stack(noisy_slices, dim=1).to(device)  # [N', T, F]
+
+        # 4) edge_index_noisy מ-NX
+        G_noisy_simple = nx.DiGraph()
+        G_noisy_simple.add_nodes_from(G_noisy.nodes())
+        G_noisy_simple.add_edges_from(G_noisy.edges())
+        edge_index_noisy = from_networkx(G_noisy_simple).edge_index.to(device)
+
+        # 5) Forward לאורך T → “קריאת רצף”
+        with torch.no_grad():
+            outputs_t = []
+            for t in range(T):
+                h_t = model(edge_index_noisy, x=node_features_over_time_noisy[:, t, :])  # [N', C]
+                outputs_t.append(h_t)
+            X_noisy = torch.stack(outputs_t, dim=1)                 # [N', T, C]
+            att_output_noisy = model.seq_model(X_noisy)             # [N', T, C] או [N', C]
+            if att_output_noisy.ndim == 2:
+                att_output_noisy = att_output_noisy.unsqueeze(1)    # [N', 1, C]
+            Np, Tp, Fp = att_output_noisy.shape
+            assert Tp == T, "שכבת הרצף צריכה לשמר את ציר הזמן"
+            X_flat_noisy = att_output_noisy.reshape(Np, Tp * Fp).detach().cpu().numpy()  # [N', T*C]
+
+        # 6) IF
+        scaler = MinMaxScaler()
+        X_scaled = scaler.fit_transform(X_flat_noisy)
+        clf = IsolationForest(n_estimators=100, contamination=contamination, random_state=random_state)
+        clf.fit(X_scaled)
+        anomaly_scores = -clf.decision_function(X_scaled)  # גדול → חריג יותר
+
+        # פיצול ציונים
+        real_scores = anomaly_scores[:original_N]
+        fake_scores = anomaly_scores[original_N:]
+
+        # 7) סף (פשוט): אחוזון 95 של המקוריים
+        thr = np.percentile(real_scores, 95) if real_scores.size else np.nan
+        real_flags = (real_scores > thr) if real_scores.size else np.array([])
+        fake_flags = (fake_scores > thr) if fake_scores.size else np.array([])
+
+        FPR = real_flags.mean() if real_flags.size else float("nan")
+        TPR = fake_flags.mean() if fake_flags.size else float("nan")
+
+        tpr_list.append(TPR)
+        fpr_list.append(FPR)
+
+        results_per_iter.append({
+            "iteration": it,
+            "t_injected": int(t_i),
+            "n_noise": int(n_noise_nodes),
+            "threshold_p95_real": float(thr) if not np.isnan(thr) else float("nan"),
+            "mean_real_score": float(real_scores.mean()) if real_scores.size else float("nan"),
+            "mean_fake_score": float(fake_scores.mean()) if fake_scores.size else float("nan"),
+            "TPR": float(TPR),
+            "FPR": float(FPR),
+        })
+
+    summary = {
+        "iters": int(n_iters),
+        "k_percent": float(k_percent),
+        "connect_prob": float(connect_prob),
+        "tpr_mean": float(np.nanmean(tpr_list)) if len(tpr_list) else float("nan"),
+        "tpr_std": float(np.nanstd(tpr_list)) if len(tpr_list) else float("nan"),
+        "fpr_mean": float(np.nanmean(fpr_list)) if len(tpr_list) else float("nan"),
+        "fpr_std": float(np.nanstd(fpr_list)) if len(tpr_list) else float("nan"),
+    }
+    return {"summary": summary, "results_per_iter": results_per_iter}
+
+
+# ==============================
+#   התאמת nhid אוטומטית (רשות)
+# ==============================
+def _auto_fit_nhid_and_rebuild(model_cls, args, device, edge_index, probe_x, time_length, max_tries=2):
+    """
+    מנסה להריץ צעד forward אחד. אם מתקבלת שגיאת כפל מטריצות (mobius_matvec),
+    מפענח את הממדים מהשגיאה, מתאים args.nhid = U - 1, ובונה מודל מחדש.
+    """
+    for _ in range(max_tries):
+        model = model_cls(args, time_length=time_length).to(device)
+        try:
+            with torch.no_grad():
+                _ = model(edge_index, x=probe_x)  # צעד בדיקה יחיד
+            return model  # הצליח, אין התאמות נדרשות
+        except RuntimeError as e:
+            msg = str(e)
+            m = re.search(r"mat1 and mat2 shapes cannot be multiplied \(\d+x(\d+) and (\d+)x(\d+)\)", msg)
+            if m is None:
+                raise  # שגיאה אחרת – מעבירים הלאה
+            u_dim = int(m.group(1))  # ה-U מהצורה (N x U)
+            suggested_nhid = max(1, u_dim - 1)
+            if getattr(args, "nhid", None) == suggested_nhid:
+                raise
+            print(f"🔧 Adjusting args.nhid from {getattr(args,'nhid',None)} to {suggested_nhid} based on probe (U={u_dim}).")
+            args.nhid = suggested_nhid
+            continue
+    raise RuntimeError("Failed to auto-fit nhid after probe attempts.")
+
+
+# ==============================
+#   Main
+# ==============================
+def main():
+    # UTF-8 למסופים מסוימים
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-if not _dynhat_import_ok:
-    raise ImportError("Could not import Dynhat from models.Dynhat/model.Dynhat/script.models.Dynhat")
+    args = parse_args()
+    args = _ensure_dynhat_defaults(args)
+    device = torch.device(args.device)
 
-# ========= ייבוא דאטה =========
-try:
-    # אצלך: utilis.data_utilis או script.utils.dataUtils (תומך בשניהם)
-    try:
-        from utilis.data_utilis import load_citation_data
-    except Exception:
-        from script.utils.dataUtils import load_citation_data
-except Exception as e:
-    raise ImportError("Cannot import load_citation_data from your project") from e
+    # -----------------------------------------------------------
+    # שלב 1: טעינת סנאפשוטים ובניית Node2Vec דינמי [N, T, F]
+    # -----------------------------------------------------------
+    num_nodes, T_bins, snapshots = load_manifest_and_snapshots(args.data_root)
+    if args.t_max is not None:
+        use_T = min(args.t_max, T_bins)
+        snapshots = {t: snapshots[t] for t in range(use_T)}
+        T_bins = use_T
 
-try:
-    from node2vec import Node2Vec
-except Exception as e:
-    raise ImportError("Missing node2vec package in environment") from e
+    embedding_matrix = build_dynamic_node2vec(
+        snapshots=snapshots,
+        num_nodes=num_nodes,
+        T=T_bins,
+        emb_dim=args.emb_dim,
+        walk_length=args.walk_length,
+        num_walks=args.num_walks,
+        workers=args.workers,
+        window=args.window,
+    )  # torch.Tensor [N, T, F]
+    print("✅ embedding_matrix shape:", tuple(embedding_matrix.shape))  # [N, T, F]
 
-
-# ========= עזר =========
-def set_seed(seed: int = 42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-def finite_ratio(x: np.ndarray) -> float:
-    if x.size == 0:
-        return 0.0
-    return float(np.isfinite(x).sum()) * 100.0 / x.size
-
-def ensure_tensor_cpu_np(x: torch.Tensor) -> np.ndarray:
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
-
-
-# ========= ארגומנטים נוספים מה-CLI (לא חובה) =========
-def parse_extra_cli():
-    p = argparse.ArgumentParser(description="newMain.py - Dynhat + classifier head")
-    p.add_argument("--snapshots_pickle", type=str,
-                   default="src/data/generate_custom_output/ind.dblpv13.snapshot_graphs",
-                   help="Path to snapshot_graphs pickle")
-    p.add_argument("--meta_csv", type=str,
-                   default="src/data/final_filtered_by_fos_and_reference.csv",
-                   help="Path to metadata CSV")
-    p.add_argument("--data_path", type=str,
-                   default="src/data/generate_custom_output",
-                   help="Path for load_citation_data")
-    p.add_argument("--save_dir", type=str,
-                   default="src/plots/anomaly_score_plots",
-                   help="Where to save plots & summaries")
-    p.add_argument("--lr", type=float, default=3e-3)
-    p.add_argument("--weight_decay", type=float, default=1e-4)
-    p.add_argument("--grad_clip", type=float, default=1.0)
-    return p.parse_args([])  # ברירת מחדל, בלי לשבור קוד אצלך
-
-
-EX = parse_extra_cli()
-SAVE_DIR = Path(EX.save_dir)
-SAVE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# ========= שלב 1: טעינת סנאפשוטים + מטא =========
-print("== Load metadata and snapshots ==")
-df_meta = pd.read_csv(EX.meta_csv)
-with open(EX.snapshots_pickle, "rb") as f:
-    snapshot_graphs = pickle.load(f)
-
-# ========= שלב 2: אמבדינגים דינמיים Node2Vec =========
-print("== Build dynamic Node2Vec embeddings ==")
-T = int(args.Time_stamps)
-node2vec_embeddings = {}
-for i, year in enumerate(sorted(snapshot_graphs.keys())[:T]):
-    G_year = snapshot_graphs[year]
-
-    # Node2Vec ל-פר-גרף
-    node2vec = Node2Vec(G_year,
-                        dimensions=args.nfeat,
-                        walk_length=30,
-                        num_walks=args.num_walks,
-                        workers=args.workers)
-    model_n2v = node2vec.fit(window=10, min_count=1)
-
-    # טנזור [N, F] — מבוסס על אינדקסים של df_meta
-    N = len(df_meta)
-    emb = torch.zeros((N, args.nfeat), dtype=torch.float32)
-    for node in G_year.nodes():
-        try:
-            emb[node] = torch.tensor(model_n2v.wv[str(node)], dtype=torch.float32)
-        except KeyError:
-            continue
-    node2vec_embeddings[i] = emb
-
-embedding_matrix = torch.stack([node2vec_embeddings[t] for t in range(T)], dim=1)  # [N, T, F]
-print(f"✅ embedding_matrix shape: {tuple(embedding_matrix.shape)}")
-_EMB = ensure_tensor_cpu_np(embedding_matrix)
-print(f"[DBG] embedding_matrix finite%={finite_ratio(_EMB):.2f}%")
-
-# ========= שלב 3: טעינת adjacency + labels =========
-print("== Load citation data (adj/features/labels) ==")
-adj, features, labels, idx_train, idx_val, idx_test = load_citation_data(
-    dataset_str="dblpv13", use_feats=True, data_path=EX.data_path
-)
-edge_index, _ = from_scipy_sparse_matrix(adj)
-
-# מעבירים לטנסורים/דיווייס
-features = torch.FloatTensor(features.todense()).to(args.device)
-labels = torch.LongTensor(labels).to(args.device)
-edge_index = edge_index.to(args.device)
-embedding_matrix = embedding_matrix.to(args.device)
-
-# לוודא ש-labels זה אינדקסים (לא one-hot)
-if labels.ndim == 2 and labels.shape[1] > 1:
-    labels = labels.argmax(dim=1)
-
-args.num_nodes = features.shape[0]
-args.num_classes = int(labels.max().item()) + 1
-
-print(f"[DEBUG] labels_np shape: {labels.shape} dtype: {labels.dtype}")
-# (לא מחלק לפי TRAIN/VAL כאן; אם תרצי, הדפיסי histogram עם numpy.bincount)
-
-# ========= שלב 4: מודל Dynhat =========
-print("== Build Dynhat model ==")
-model = Dynhat(args, time_length=T).to(args.device)
-print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.num_classes}, nout={args.nout}")
-print(f"✅ Dynhat ready with nhid={args.nhid} (att heads={args.temporal_attention_layer_heads}, struct heads={args.heads}).")
-
-# ראש סיווג ייבנה דינמית בפעם הראשונה שנדע את C (ממד הפיצ'רים אחרי הקשב)
-clf_head = None
-params_for_optim = list(model.parameters())  # נוסיף את הראש כשייבנה
-optimizer = torch.optim.AdamW(params_for_optim, lr=EX.lr, weight_decay=EX.weight_decay)
-
-# ========= שלב 5: אימון =========
-print("== Training ==")
-train_losses = []
-val_accuracies = []
-
-def _temporal_forward_all_times(m: torch.nn.Module,
-                                edge_index: torch.Tensor,
-                                emb_mat: torch.Tensor,
-                                T_steps: int):
-    """ מחזיר X=[N,T,C] על ידי הפעלת Dynhat לכל t ואז seq_model. """
-    outs = []
-    for t in range(T_steps):
-        x_t = emb_mat[:, t, :]
-        h_t = m(edge_index, x=x_t)
-        outs.append(h_t)
-    X = torch.stack(outs, dim=1)  # [N, T, C]
-    # אצל Dynhat, שכבת הקשב היא model.seq_model
-    X_att = m.seq_model(X)        # [N, T, C] (לרוב שומר ממד)
-    return X_att
-
-for epoch in range(int(args.max_epoch)):
-    model.train()
-    optimizer.zero_grad(set_to_none=True)
-
-    # קדימה דרך כל הזמנים + קשב
-    X_att = _temporal_forward_all_times(model, edge_index, embedding_matrix, T)  # [N,T,C]
-    feat_last = X_att[:, -1, :]  # [N,C] — זמן אחרון (כמו ב-AdiHS)
-
-    # בונים ראש סיווג בפעם הראשונה: C -> num_classes
-    if clf_head is None:
-        C = int(feat_last.shape[-1])
-        num_classes = int(args.num_classes)
-        clf_head = torch.nn.Linear(C, num_classes).to(args.device)
-        # לעדכן אופטימייזר שיכלול גם את הראש
-        optimizer = torch.optim.AdamW(
-            list(model.parameters()) + list(clf_head.parameters()),
-            lr=EX.lr, weight_decay=EX.weight_decay
-        )
-
-    logits = clf_head(feat_last)  # [N,num_classes]
-    loss = F.cross_entropy(logits[idx_train], labels[idx_train])
-    loss.backward()
-
-    # יציבות
-    torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(clf_head.parameters()), max_norm=EX.grad_clip)
-    optimizer.step()
-
-    # ולידציה
-    model.eval()
+    # בדיקות בסיס ל-Node2Vec
     with torch.no_grad():
-        X_att_val = _temporal_forward_all_times(model, edge_index, embedding_matrix, T)
-        feat_last_val = X_att_val[:, -1, :]
-        val_logits = clf_head(feat_last_val)
-        if len(idx_val) > 0:
-            val_pred = val_logits[idx_val].argmax(dim=1)
-            acc_val = (val_pred == labels[idx_val]).float().mean().item()
+        em_np = embedding_matrix.detach().cpu().numpy()
+        fin = np.isfinite(em_np)
+        print(f"[DBG] embedding_matrix raw: shape={em_np.shape}, finite%={100.0*fin.mean():.2f}%")
+        per_t = [100.0*np.isfinite(em_np[:, t, :]).mean() for t in range(em_np.shape[1])]
+        print(f"[DBG] embedding_matrix raw: finite% per t: {per_t}")
+        per_t_cols = []
+        for t in range(em_np.shape[1]):
+            std_cols = em_np[:, t, :].std(axis=0)
+            per_t_cols.append(100.0 * (std_cols > 0).mean())
+        print(f"[DBG] embedding_matrix raw: %cols std>0 per t: {per_t_cols}")
+
+    # קיבוע nfeat & num_nodes לפי אמבדינגים
+    args.nfeat = int(embedding_matrix.shape[-1])     # F
+    args.num_nodes = int(embedding_matrix.shape[0])  # N
+
+    # -----------------------------------------------------------
+    # שלב 2: טעינת גרף/פיצ'רים/לייבלים + ספליטים (פורמט custom_out)
+    # -----------------------------------------------------------
+    adj, features_sp, labels_np, idx_train, idx_val, idx_test = load_citation_data(
+        dataset_str="dblpv13",
+        use_feats=True,
+        data_path=args.data_root
+    )
+
+    # ======== DEBUG BLOCK: class counts overall + per split ========
+    print("\n[DEBUG] labels_np shape:", labels_np.shape, "dtype:", getattr(labels_np, "dtype", type(labels_np)))
+    labels_vec = labels_np
+    if getattr(labels_vec, "ndim", 1) == 2 and labels_vec.shape[1] > 1:
+        labels_vec = labels_vec.argmax(1)
+
+    uniq_all, cnt_all = np.unique(labels_vec, return_counts=True)
+    print("[DEBUG] classes in ALL:", dict(zip(uniq_all.tolist(), cnt_all.tolist())))
+
+    def _dist(name, v):
+        u, c = np.unique(v, return_counts=True)
+        print(f"[DEBUG] classes in {name}:", dict(zip(u.tolist(), c.tolist())))
+
+    _dist("TRAIN", labels_vec[idx_train])
+    _dist("VAL",   labels_vec[idx_val])
+    _dist("TEST",  labels_vec[idx_test])
+
+    lb_path = os.path.join(args.data_root, "label_binarizer.json")
+    if os.path.exists(lb_path):
+        try:
+            with open(lb_path, "r", encoding="utf-8") as f:
+                lbj = json.load(f)
+            print("[DEBUG] label_binarizer classes_:", lbj.get("classes"))
+        except Exception as e:
+            print("[DEBUG] failed reading label_binarizer.json:", e)
+    else:
+        print("[DEBUG] label_binarizer.json not found at", lb_path)
+    # ======== END DEBUG BLOCK ========
+
+    edge_index, _ = from_scipy_sparse_matrix(adj)
+    features = torch.FloatTensor(features_sp.todense()).to(device)
+    labels = torch.LongTensor(labels_np).to(device)
+    edge_index = edge_index.to(device)
+
+    # לייבלים – ודא אינדקסים (לא one-hot)
+    if labels.dim() == 2 and labels.size(1) > 1:
+        labels = labels.argmax(1)
+    if labels.dtype is not torch.long:
+        labels = labels.long()
+
+    # num_classes / nclass
+    args.num_classes = int(labels.max().item() + 1)
+    if not hasattr(args, "nclass"):
+        args.nclass = args.num_classes
+
+    # בדיקה: מחלקה בודדת
+    single_class_problem = args.num_classes < 2
+
+    print(f"🔧 Dynhat init params: num_nodes={args.num_nodes}, nfeat={args.nfeat}, nclass={args.nclass}, nout={args.nout}")
+
+    # fallback: ערך עקמומיות ברמת המחלקה (אם Dynhat.__init__ משתמש לפני הגדרה)
+    Dynhat.c = float(getattr(args, "c", getattr(args, "curvature", getattr(args, "c0", 1.0))))
+
+    # -----------------------------------------------------------
+    # שלב 3: מודל Dynhat + אימון עם ראש סיווג
+    # -----------------------------------------------------------
+    probe_x = embedding_matrix[:, 0, :].to(device)  # פריים זמן בודד כבדיקה
+    model = _auto_fit_nhid_and_rebuild(Dynhat, args, device, edge_index, probe_x, time_length=T_bins).to(device)
+
+    # ראש סיווג: מקרין מ־C=nhid+1 ל־num_classes
+    cls_head = torch.nn.Linear(args.nhid + 1, args.num_classes).to(device)
+
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(cls_head.parameters()),
+        lr=args.lr, weight_decay=args.weight_decay
+    )
+
+    print(f"✅ Dynhat ready with nhid={args.nhid} (agg_feat_size={args.nhid + 1}).")
+
+    # אימון
+    train_losses: list = []
+    if not single_class_problem and args.max_epoch:
+        for epoch in range(args.max_epoch):
+            model.train(); cls_head.train()
+            optimizer.zero_grad()
+
+            temporal_outputs = []
+            for t in range(T_bins):
+                x_t = embedding_matrix[:, t, :].to(device)
+                x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
+                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
+                if t == 0:
+                    x_np0 = x_t.detach().cpu().numpy().reshape(-1)
+                    print(f"[DBG] x_t after normalize (*norm-scale): shape={tuple(x_t.shape)}, finite%={100.0*np.isfinite(x_np0).mean():.2f}%")
+                    # דגימה סטטיסטית
+                    rows_std = x_t.std(dim=1).detach().cpu().numpy()
+                    cols_std = x_t.std(dim=0).detach().cpu().numpy()
+                    print(f"[DBG] x_t after normalize (*norm-scale): rows std>0%={100.0*(rows_std>0).mean():.2f}%, cols std>0%={100.0*(cols_std>0).mean():.2f}%")
+
+                h_t = model(edge_index, x=x_t)           # [N, C]
+                h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
+                if t == 0:
+                    h_np0 = h_t.detach().cpu().numpy().reshape(-1)
+                    print(f"[DBG] h_t from Dynhat (t=0): shape={tuple(h_t.shape)}, finite%={100.0*np.isfinite(h_np0).mean():.2f}%")
+                    rows_std = h_t.std(dim=1).detach().cpu().numpy()
+                    cols_std = h_t.std(dim=0).detach().cpu().numpy()
+                    print(f"[DBG] h_t from Dynhat (t=0): rows std>0%={100.0*(rows_std>0).mean():.2f}%, cols std>0%={100.0*(cols_std>0).mean():.2f}%")
+                temporal_outputs.append(h_t)
+
+            X = torch.stack(temporal_outputs, dim=1)     # [N, T, C]
+            # דיבוג לא פולשני של שכבת הקשב בזמן TRAIN
+            dbg_seq_temporal_layer_once(model.seq_model, X)
+
+            att = model.seq_model(X)                     # [N, T, C] או [N, C]
+            if att.ndim == 2:
+                att = att.unsqueeze(1)
+
+            feat_last = att[:, -1, :]                    # [N, C] (לפני ראש הסיווג)
+            logits = cls_head(feat_last)                 # [N, num_classes]
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=1e6, neginf=-1e6)
+
+            loss = F.cross_entropy(logits[idx_train], labels[idx_train])
+            if not torch.isfinite(loss):
+                print(f"[Epoch {epoch}] Loss not finite ({loss.item():.4f}). Reducing LR ×0.1 and skipping.")
+                for g in optimizer.param_groups:
+                    g['lr'] = max(g['lr'] * 0.1, 1e-5)
+                continue
+
+            loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(cls_head.parameters()), max_norm=1.0)
+            optimizer.step()
+
+            train_losses.append(loss.item())
+            print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f} | grad_norm={(float(grad_norm) if torch.isfinite(grad_norm) else float('nan')):.6f}")
+    elif not single_class_problem and args.max_epoch is None:
+        print("ℹ Training skipped because --max-epoch=None (set a value to train).")
+    else:
+        print("⚠ Detected a single class in labels. Skipping supervised cross-entropy training.")
+        model.eval(); cls_head.eval()
+
+    # -----------------------------------------------------------
+    # === חישוב att_output במצב eval כדי שישמש ל-IF + LOF ===
+    #     (כולל דיאגנוסטיקה: eval מול train-mode(no_grad))
+    # -----------------------------------------------------------
+    model.eval(); cls_head.eval()
+
+    # --- eval-mode run ---
+    with torch.no_grad():
+        outs_eval = []
+        for t in range(T_bins):
+            x_t = embedding_matrix[:, t, :].to(device)
+            x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
+            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
+            if t == 0:
+                x_np = x_t.detach().cpu().numpy().reshape(-1)
+                print(f"[EVAL] x_t stats: min={np.nanmin(x_np):.3e}, max={np.nanmax(x_np):.3e}, mean={np.nanmean(x_np):.3e}, std={np.nanstd(x_np):.3e}")
+            h_t = model(edge_index, x=x_t)  # [N, C]
+            h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
+            if t == 0:
+                h_np = h_t.detach().cpu().numpy().reshape(-1)
+                print(f"[EVAL] h_t stats (t=0): min={np.nanmin(h_np):.3e}, max={np.nanmax(h_np):.3e}, mean={np.nanmean(h_np):.3e}, std={np.nanstd(h_np):.3e}")
+            outs_eval.append(h_t)
+        X_eval = torch.stack(outs_eval, dim=1)  # [N, T, C]
+        dbg_seq_temporal_layer_once(model.seq_model, X_eval)
+
+    # --- train-mode(no_grad) run (השוואה) ---
+    with torch.no_grad():
+        model.train()
+        outs_trainmode = []
+        for t in range(T_bins):
+            x_t = embedding_matrix[:, t, :].to(device)
+            x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
+            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
+            h_t = model(edge_index, x=x_t)
+            h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
+            if t == 0:
+                h_np_tr = h_t.detach().cpu().numpy().reshape(-1)
+                print(f"[TRAIN-MODE(no_grad)] h_t stats (t=0): min={np.nanmin(h_np_tr):.3e}, max={np.nanmax(h_np_tr):.3e}, mean={np.nanmean(h_np_tr):.3e}, std={np.nanstd(h_np_tr):.3e}")
+            outs_trainmode.append(h_t)
+        X_trainmode = torch.stack(outs_trainmode, dim=1)  # [N, T, C]
+        model.eval()
+
+    with torch.no_grad():
+        diff = (X_eval - X_trainmode).abs()
+        d_np = diff.detach().cpu().numpy().reshape(-1)
+        fin = np.isfinite(d_np)
+        if fin.any():
+            print(f"[CMP] |X_eval - X_trainmode|: mean={np.nanmean(d_np[fin]):.3e}, max={np.nanmax(d_np[fin]):.3e}")
         else:
-            acc_val = float("nan")
+            print("[CMP] comparison diff not finite.")
 
-    train_losses.append(float(loss.item()))
-    val_accuracies.append(float(acc_val))
-    print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f} | Val Acc: {acc_val:.4f}")
+    # בדיקת פרמטרים עיקריים
+    try:
+        W = model.linear.weight.detach().cpu().numpy().reshape(-1)
+        l2 = float(np.sqrt((W**2).sum()))
+        mx = float(np.max(np.abs(W)))
+        print(f"[PARAM] model.linear.weight: L2={l2:.3e}, max|W|={mx:.3e}")
+    except Exception as e:
+        print(f"[PARAM] failed reading model.linear.weight: {e}")
 
-# ========= גרף Overfitting =========
-plt.figure(figsize=(10, 5))
-plt.plot(train_losses, label="Train Loss", linewidth=2)
-plt.plot(val_accuracies, label="Validation Accuracy", linewidth=2)
-plt.xlabel("Epoch"); plt.ylabel("Value"); plt.title("Train Loss vs Validation Accuracy")
-plt.grid(True); plt.legend()
-plot_path = SAVE_DIR / "loss_vs_val_acc.png"
-plt.savefig(plot_path); plt.close()
-print(f"✅ Saved plot: {plot_path}")
+    # חישוב att_output רגיל (eval)
+    with torch.no_grad():
+        att_output = model.seq_model(X_eval)            # [N, T, C] או [N, C]
+        if att_output.ndim == 2:
+            att_output = att_output.unsqueeze(1)        # [N, 1, C]
+        dbg_stats("att_output eval", att_output, per_time=True)
 
-# ========= שלב 6: חישוב פלט קשב מלא לצורך אנומליה =========
-print("== Compute attention outputs for anomaly scoring ==")
-model.eval()
-with torch.no_grad():
-    X_att_all = _temporal_forward_all_times(model, edge_index, embedding_matrix, T)  # [N,T,C]
+    # -----------------------------------------------------------
+    # שלב 5: IF+LOF טמפורלי
+    # -----------------------------------------------------------
+    N_eval, T_eval, C_eval = att_output.shape
+    lof_k = max(2, min(args.lof_n_neighbors, N_eval - 1))
+    contam = min(max(args.contamination, max(1, int(0.02 * N_eval)) / N_eval), 0.20)
+    print(f"\n📏 Shapes: N={N_eval}, T={T_eval}, C={C_eval}  |  LOF.k={lof_k}, IF.contamination={contam:.4f}")
 
-X_np = ensure_tensor_cpu_np(X_att_all)  # [N,T,C]
-if not np.isfinite(X_np).any():
-    print("⚠️ No finite values in attention output — skipping anomaly scoring.")
-    # שמירה מינימלית ויציאה
-    pd.DataFrame({"train_loss": train_losses, "val_acc": val_accuracies}).to_csv(SAVE_DIR / "train_val_curve.csv", index=False)
-    sys.exit(0)
+    AS_if  = np.full((N_eval, T_eval), np.nan, dtype=np.float32)
+    AS_lof = np.full((N_eval, T_eval), np.nan, dtype=np.float32)
+    valid_t = []
 
-# ========= שלב 7: אנומליה (IF) =========
-print("== Anomaly detection (IsolationForest) on [N, T*C] ==")
-N, T_eff, C_eff = X_np.shape
-X_flat = X_np.reshape(N, T_eff * C_eff)
+    for t in range(T_eval):
+        X_t = att_output[:, t, :].detach().cpu().numpy()
 
-# guard מינימלי: החלפת non-finite ב-0
-mask_finite = np.isfinite(X_flat)
-if not mask_finite.all():
-    X_flat = np.where(mask_finite, X_flat, 0.0)
+        # ניקוי NaN/Inf
+        if not np.isfinite(X_t).all():
+            n_bad = np.size(X_t) - np.isfinite(X_t).sum()
+            print(f"[WARN] Found {n_bad} non-finite entries at t={t}. Fixing with zscore guards.")
+            # z-score guard
+            mu = np.nanmean(X_t, axis=0, keepdims=True)
+            sigma = np.nanstd(X_t, axis=0, keepdims=True)
+            sigma[sigma == 0] = 1.0
+            X_t = (X_t - mu) / sigma
+            X_t = np.nan_to_num(X_t, nan=0.0, posinf=1e6, neginf=-1e6)
 
-# MinMax
-scaler = MinMaxScaler()
-X_scaled = scaler.fit_transform(X_flat)
+        # האם יש אינפורמציה לא-קבועה?
+        if X_t.shape[1] == 0:
+            print(f"[INFO] t={t}: empty C. Skipping."); continue
+        col_std = X_t.std(axis=0)
+        informative = col_std > 0
+        if informative.sum() == 0:
+            print(f"[INFO] t={t}: not enough informative features after filtering (C'=0). Skipping.")
+            continue
+        X_t = X_t[:, informative]
 
-clf = IsolationForest(n_estimators=200, contamination=0.05, random_state=42)
-clf.fit(X_scaled)
-anomaly_scores = -clf.decision_function(X_scaled)  # גדול=יותר אנומלי
-anomaly_ranks = np.argsort(anomaly_scores)[::-1]   # מהכי אנומלי ומטה
+        scaler_t = MinMaxScaler()
+        X_t_scaled = scaler_t.fit_transform(X_t)
 
-# שמירת סיכום
-summary_df = pd.DataFrame({
-    "node_id": np.arange(N, dtype=int),
-    "anomaly_score": anomaly_scores
-}).sort_values("anomaly_score", ascending=False)
+        try:
+            if_clf_t = IsolationForest(
+                n_estimators=100,
+                contamination=contam,
+                random_state=args.random_state,
+                n_jobs=-1
+            )
+            if_clf_t.fit(X_t_scaled)
+            AS_if[:, t] = -if_clf_t.decision_function(X_t_scaled)
+        except Exception as e:
+            print(f"[IF] t={t} failed: {e}")
 
-summary_path = SAVE_DIR / "temporal_anomaly_summary.csv"
-summary_df.to_csv(summary_path, index=False)
-print(f"💾 saved: {summary_path}")
+        try:
+            lof_t = LocalOutlierFactor(
+                n_neighbors=lof_k,
+                contamination=contam,
+                novelty=False,
+                n_jobs=-1
+            )
+            _ = lof_t.fit_predict(X_t_scaled)
+            AS_lof[:, t] = -(lof_t.negative_outlier_factor_)
+        except Exception as e:
+            print(f"[LOF] t={t} failed: {e}")
 
-# היסטוגרמה ידידותית (Guard no-data)
-if np.isfinite(anomaly_scores).any():
-    plt.figure(figsize=(8, 4))
-    plt.hist(anomaly_scores, bins=50)
-    plt.title("IsolationForest anomaly scores (flattened over time)")
-    plt.xlabel("score"); plt.ylabel("count"); plt.grid(True)
-    fig_path = SAVE_DIR / "hist_anomaly_scores.png"
-    plt.savefig(fig_path); plt.close()
-    print(f"💾 saved: {fig_path}")
-else:
-    print("ℹ️ skipped histogram: no finite data.")
+        valid_t.append(t)
 
-print("\nTop-10 anomalous nodes (IF):")
-for rank, nid in enumerate(anomaly_ranks[:10], start=1):
-    print(f"{rank:2d}. node={nid:5d}  score={anomaly_scores[nid]:.6f}")
+    if len(valid_t) == 0:
+        print("⚠ No valid timesteps for anomaly scoring (all t were constant/invalid).")
+        print(f"[INFO] mean valid t per node: 0.00 / {T_eval}")
+        mu_if = np.full((N_eval,), np.nan, dtype=np.float32)
+        std_if = np.full((N_eval,), np.nan, dtype=np.float32)
+        mu_lof = np.full((N_eval,), np.nan, dtype=np.float32)
+        std_lof = np.full((N_eval,), np.nan, dtype=np.float32)
+    else:
+        print(f"[INFO] mean valid t per node: {len(valid_t)/T_eval:.2f} / {T_eval}")
+        mu_if   = np.nanmean(AS_if[:, valid_t],  axis=1)
+        std_if  = np.nanstd(AS_if[:, valid_t],   axis=1)
+        mu_lof  = np.nanmean(AS_lof[:, valid_t], axis=1)
+        std_lof = np.nanstd(AS_lof[:, valid_t],  axis=1)
 
-# ========= סיום =========
-print("\n✅ Done.")
+    _print_topk("IF by mean (μ)",  mu_if,  k=min(20, N_eval))
+    _print_topk("IF by std (σ)",   std_if, k=min(20, N_eval))
+    _print_topk("LOF by mean (μ)", mu_lof, k=min(20, N_eval))
+    _print_topk("LOF by std (σ)",  std_lof, k=min(20, N_eval))
+
+    # קורלציה בין IF ל-LOF (בממוצעים)
+    try:
+        if np.isfinite(mu_if).any() and np.isfinite(mu_lof).any():
+            rho, p = spearmanr(mu_if, mu_lof)
+            if np.isfinite(rho):
+                print(f"\n🔗 Spearman(IF.mean, LOF.mean) = {rho:.4f}  (p={p:.2e})")
+            else:
+                print("\n🔗 Spearman skipped: non-finite result.")
+        else:
+            print("\n🔗 Spearman skipped: non-finite vectors.")
+    except Exception as e:
+        print("Spearman failed:", e)
+
+    # סטטיסטיקות התפלגות
+    _summ("IF.mean over nodes",  mu_if)
+    _summ("IF.std  over nodes",  std_if)
+    _summ("LOF.mean over nodes", mu_lof)
+    _summ("LOF.std  over nodes", std_lof)
+
+    # שמירה לקבצים (CSV + היסטוגרמות)
+    df_summary = pd.DataFrame({
+        "mu_if":  mu_if,  "std_if": std_if,
+        "mu_lof": mu_lof, "std_lof": std_lof,
+    })
+    df_summary.index.name = "node_id"
+    df_summary.to_csv("temporal_anomaly_summary.csv")
+    print("💾 saved: temporal_anomaly_summary.csv")
+
+    _save_hist(mu_if,  "hist_mu_if.png",  title="IF mean per node")
+    _save_hist(std_if, "hist_std_if.png", title="IF std per node")
+    _save_hist(mu_lof, "hist_mu_lof.png", title="LOF mean per node")
+    _save_hist(std_lof,"hist_std_lof.png",title="LOF std per node")
+
+    # -----------------------------------------------------------
+    # שלב 6: Noise Injection Validation (אחרי IF/LOF)
+    # -----------------------------------------------------------
+    G_nx = nx.DiGraph()
+    rows, cols = adj.nonzero()
+    G_nx.add_nodes_from(range(adj.shape[0]))
+    G_nx.add_edges_from(zip(rows.tolist(), cols.tolist()))
+
+    noise_res = validate_with_noise_injection(
+        G_original=G_nx,
+        embedding_matrix=embedding_matrix.to(device),
+        model=model,
+        T=T_bins,
+        k_percent=args.noise_percent,
+        connect_prob=args.noise_connect_prob,
+        n_iters=args.noise_iters,
+        contamination=contam,
+        random_state=args.random_state,
+    )
+
+    print("\n=== Stage-4 Validation Summary ===")
+    print(noise_res["summary"])
+
+    per_iter = noise_res.get("results_per_iter", [])
+    if per_iter:
+        delta_means = [r["mean_fake_score"] - r["mean_real_score"] for r in per_iter]
+        tprs = [r["TPR"] for r in per_iter]
+        print(f"\n🎯 Noise-vs-Real separation: Δmean (noise - real) avg = {np.mean(delta_means):.4f} ± {np.std(delta_means):.4f}")
+        print(f"🎯 Mean TPR@95% over iters = {np.mean(tprs):.3f}  (std={np.std(tprs):.3f})")
+
+    # -----------------------------------------------------------
+    # שמירת bundle (אופציונלי)
+    # -----------------------------------------------------------
+    if args.save_bundle:
+        os.makedirs(os.path.dirname(args.save_bundle), exist_ok=True)
+        torch.save({
+            "embedding_matrix": embedding_matrix.cpu(),
+            "edge_index": edge_index.cpu(),
+            "labels": labels.cpu(),
+            "att_output": att_output.cpu(),
+            "noise_validation": noise_res
+        }, args.save_bundle)
+        print(f"💾 Saved bundle to: {args.save_bundle}")
+
+
+if __name__ == "__main__":
+    main()
