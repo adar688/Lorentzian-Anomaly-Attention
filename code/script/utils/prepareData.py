@@ -259,7 +259,7 @@ def time_binning(df: pd.DataFrame, T: int) -> Tuple[pd.DataFrame, np.ndarray]:
     df2 = df.dropna(subset=["year"]).copy()
     df2["year"] = df2["year"].astype(int)
     y_min, y_max = df2["year"].min(), df2["year"].max()
-    edges = np.linspace(y_min, y_max + 1, T + 1, dtype=int)
+    edges = np.linspace(y_min, y_max + 1, T + 1)
     df2["time_bin"] = pd.cut(df2["year"], bins=edges, labels=False, include_lowest=True)
     return df2, edges
 
