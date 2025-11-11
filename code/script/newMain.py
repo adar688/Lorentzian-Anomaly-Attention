@@ -11,7 +11,7 @@ import sys
 import argparse
 import copy
 import re
-import json  # ← NEW: needed for reading label_binarizer.json
+import json
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -387,7 +387,7 @@ def main():
         data_path=args.data_root
     )
 
-    # ======== DEBUG BLOCK: class counts overall + per split ========  ← NEW
+    # ======== DEBUG BLOCK: class counts overall + per split ========
     print("\n[DEBUG] labels_np shape:", labels_np.shape, "dtype:", getattr(labels_np, "dtype", type(labels_np)))
     labels_vec = labels_np
     if getattr(labels_vec, "ndim", 1) == 2 and labels_vec.shape[1] > 1:
@@ -441,11 +441,18 @@ def main():
     Dynhat.c = float(getattr(args, "c", getattr(args, "curvature", getattr(args, "c0", 1.0))))
 
     # -----------------------------------------------------------
-    # שלב 3: מודל Dynhat + אימון (אם יש יותר ממחלקה אחת)
+    # שלב 3: מודל Dynhat + אימון עם ראש סיווג
     # -----------------------------------------------------------
     probe_x = embedding_matrix[:, 0, :].to(device)  # פריים זמן בודד כבדיקה
-    model = _auto_fit_nhid_and_rebuild(Dynhat, args, device, edge_index, probe_x, time_length=T_bins)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    model = _auto_fit_nhid_and_rebuild(Dynhat, args, device, edge_index, probe_x, time_length=T_bins).to(device)
+
+    # ראש סיווג: מקרין מ־C=nhid+1 ל־num_classes
+    cls_head = torch.nn.Linear(args.nhid + 1, args.num_classes).to(device)
+
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(cls_head.parameters()),
+        lr=args.lr, weight_decay=args.weight_decay
+    )
 
     print(f"✅ Dynhat ready with nhid={args.nhid} (agg_feat_size={args.nhid + 1}).")
 
@@ -453,60 +460,59 @@ def main():
 
     if not single_class_problem and args.max_epoch:
         for epoch in range(args.max_epoch):
-            model.train()
+            model.train(); cls_head.train()
             optimizer.zero_grad()
 
             temporal_outputs = []
             for t in range(T_bins):
                 x_t = embedding_matrix[:, t, :].to(device)
-                # נרמול וזהירות מ-NaN לפני הכנסה למודל
+                # guard נגד NaN/Inf + נרמול עדין
                 x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
-                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * 0.1  # מונע גדילה מוגזמת במניפולד
-                h_t = model(edge_index, x=x_t)
-                # גם אחרי ה-Forward:
+                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * 0.1
+                h_t = model(edge_index, x=x_t)           # [N, C]
                 h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
                 temporal_outputs.append(h_t)
 
-            X = torch.stack(temporal_outputs, dim=1)        # [N, T, C]
-            att = model.seq_model(X)                        # [N, T, C] או [N, C]
+            X = torch.stack(temporal_outputs, dim=1)     # [N, T, C]
+            att = model.seq_model(X)                     # [N, T, C] או [N, C]
             if att.ndim == 2:
                 att = att.unsqueeze(1)
 
-            logits = att[:, -1, :]  # [N, C] לסיווג בזמן האחרון
-
-            # גרד-רייל לפני חישוב ה-Loss
+            feat_last = att[:, -1, :]                    # [N, C] (לפני ראש הסיווג)
+            logits = cls_head(feat_last)                 # [N, num_classes]
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1e6, neginf=-1e6)
 
             loss = F.cross_entropy(logits[idx_train], labels[idx_train])
             if not torch.isfinite(loss):
-                print(f"[Epoch {epoch}] Loss is not finite (got {loss.item()}). Reducing LR ×0.1 and skipping step.")
+                print(f"[Epoch {epoch}] Loss not finite ({loss.item():.4f}). Reducing LR ×0.1 and skipping.")
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.1, 1e-5)
                 continue
 
             loss.backward()
-
-            # קליפינג של גרדיאנטים כדי למנוע התפוצצות
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
+            torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(cls_head.parameters()), max_norm=1.0)
             optimizer.step()
+
             train_losses.append(loss.item())
             print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
     elif not single_class_problem and args.max_epoch is None:
         print("ℹ Training skipped because --max-epoch=None (set a value to train).")
     else:
         print("⚠ Detected a single class in labels. Skipping supervised cross-entropy training.")
-        model.eval()
+        model.eval(); cls_head.eval()
 
     # -----------------------------------------------------------
     # === חישוב att_output במצב eval כדי שישמש ל-IF + LOF ===
     # -----------------------------------------------------------
-    model.eval()
+    model.eval(); cls_head.eval()
     with torch.no_grad():
         outs = []
         for t in range(T_bins):
             x_t = embedding_matrix[:, t, :].to(device)
+            x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
+            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * 0.1
             h_t = model(edge_index, x=x_t)              # [N, C]
+            h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
             outs.append(h_t)
         X_eval = torch.stack(outs, dim=1)               # [N, T, C]
         att_output = model.seq_model(X_eval)            # [N, T, C] או [N, C]
