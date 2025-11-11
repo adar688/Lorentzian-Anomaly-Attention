@@ -460,7 +460,7 @@ def main():
             h_t = model(edge_index, x=x_t)              # [N, C]
             outs.append(h_t)
         X_eval = torch.stack(outs, dim=1)               # [N, T, C]
-        att_output = model.ddy_attention_layer(X_eval)  # [N, T, C] או [N, C]
+        att_output = model.seq_model(X_eval)  # [N, T, C] או [N, C]
         if att_output.ndim == 2:
             att_output = att_output.unsqueeze(1)        # [N, 1, C]
 
