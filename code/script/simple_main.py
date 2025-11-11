@@ -152,15 +152,21 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
 
 
 
-def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None):
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="plots"):
     """
-    מצייר גרפים של ציוני אנומליה (mean ו־std) עבור כל צומת בכל אחד מהאלגוריתמים (IF, LOF).
-    ציר X – מזהה צומת, ציר Y – ערך הציון.
+    מצייר ושומר גרפים של ציוני אנומליה (mean ו־std) עבור כל צומת.
+    כל גרף נשמר בתיקייה 'plots' כברירת מחדל.
     """
+    os.makedirs(save_dir, exist_ok=True)  # יצירת התיקייה אם לא קיימת
 
     N = len(mu_if)
     x = np.arange(N)
 
+    # --- גרף 1: mean per node (IF vs LOF) ---
     plt.figure(figsize=(12, 6))
     plt.scatter(x, mu_if, s=8, color='blue', alpha=0.6, label='IF mean (μ)')
     plt.scatter(x, mu_lof, s=8, color='orange', alpha=0.6, label='LOF mean (μ)')
@@ -169,8 +175,11 @@ def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None):
     plt.title("Mean (μ) anomaly scores per node (IF vs LOF)")
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    plt.savefig(os.path.join(save_dir, "anomaly_mean_scores.png"))
+    plt.close()
+    print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_mean_scores.png')}")
 
+    # --- גרף 2: std per node (IF vs LOF) ---
     plt.figure(figsize=(12, 6))
     plt.scatter(x, std_if, s=8, color='green', alpha=0.6, label='IF std (σ)')
     plt.scatter(x, std_lof, s=8, color='red', alpha=0.6, label='LOF std (σ)')
@@ -179,9 +188,11 @@ def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None):
     plt.title("Standard deviation (σ) of anomaly scores per node (IF vs LOF)")
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    plt.savefig(os.path.join(save_dir, "anomaly_std_scores.png"))
+    plt.close()
+    print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_std_scores.png')}")
 
-    # גרף משולב אופציונלי (אם תרצי)
+    # --- גרף 3 (אופציונלי): Top-K nodes לפי IF mean/std ---
     if top_k is not None:
         top_nodes = np.argsort(-mu_if)[:top_k]
         plt.figure(figsize=(10, 5))
@@ -192,7 +203,9 @@ def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None):
         plt.title(f"Top-{top_k} nodes by IF mean & std")
         plt.legend()
         plt.tight_layout()
-        plt.show()
+        plt.savefig(os.path.join(save_dir, f"top_{top_k}_if_scores.png"))
+        plt.close()
+        print(f"💾 Saved: {os.path.join(save_dir, f'top_{top_k}_if_scores.png')}")
 
 
 
@@ -320,12 +333,14 @@ def main():
     print("Top-20 LOF(std):",   res["top_std_lof_idx"])
 
     plot_anomaly_scores(
-    mu_if=res["mu_if"],
-    std_if=res["std_if"],
-    mu_lof=res["mu_lof"],
-    std_lof=res["std_lof"],
-    top_k=20
-)
+        mu_if=res["mu_if"],
+        std_if=res["std_if"],
+        mu_lof=res["mu_lof"],
+        std_lof=res["std_lof"],
+        top_k=20,
+        save_dir="plots"   # ניתן לשנות לנתיב אחר, למשל "results/graphs"
+    )
+
 
 if __name__ == "__main__":
     main()
