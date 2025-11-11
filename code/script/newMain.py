@@ -435,7 +435,7 @@ def main():
 
             # 2) ערימה + שכבת קשב → בחירת זמן אחרון ללוס
             X = torch.stack(temporal_outputs, dim=1)        # [N, T, C]
-            att = model.ddy_attention_layer(X)              # [N, T, C] או [N, C]
+            att = model.seq_model(X)              # [N, T, C] או [N, C]
             logits = att[:, -1, :] if att.ndim == 3 else att  # [N, C]
 
             # 3) Loss + עדכון משקולות
