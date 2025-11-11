@@ -46,8 +46,8 @@ def parse_args():
     # פרמטרי Node2Vec
     p.add_argument("--emb-dim", type=int, default=128, help="F: ממד האמבדינג")
     p.add_argument("--walk-length", type=int, default=30, help="Node2Vec: אורך הליכה")
-    p.add_argument("--num-walks", type=int, default=10, help="Node2Vec: מספר הליכות לצומת")
-    p.add_argument("--workers", type=int, default=4, help="Node2Vec: מספר תהליכי רקע")
+    p.add_argument("--num-walks", type=int, default=200, help="Node2Vec: מספר הליכות לצומת")
+    p.add_argument("--workers", type=int, default=2, help="Node2Vec: מספר תהליכי רקע")
     p.add_argument("--window", type=int, default=10, help="Word2Vec window")
     p.add_argument("--t-max", type=int, default=None,
                    help="אופציונלי: שימוש רק ב-T הראשונים (לבדיקות/קיצור)")
@@ -63,7 +63,7 @@ def parse_args():
                    help="שם אלטרנטיבי לעקמומיות התחלתית אם המודל משתמש בשם זה")
 
     # היפר־פרמטרים של Dynhat
-    p.add_argument("--nhid", type=int, default=64, help="גודל השכבה החבויה (hidden size)")
+    p.add_argument("--nhid", type=int, default=32, help="גודל השכבה החבויה (hidden size)")
     p.add_argument("--dropout", type=float, default=0.5, help="Dropout כולל")
     p.add_argument("--attn-dropout", type=float, default=0.0, help="Dropout בשכבת הקשב (אם קיים)")
     p.add_argument("--feat-dropout", type=float, default=0.0, help="Dropout על פיצ'רים (אם קיים)")
@@ -78,9 +78,9 @@ def parse_args():
     p.add_argument("--aggregation", type=str, default="att",
                    choices=["att", "mean", "sum", "max"],
                    help="סוג האגרגציה הטמפורלית/גרפית במודל (att/mean/sum/max)")
-    p.add_argument("--nfeat", type=int, default=None,
+    p.add_argument("--nfeat", type=int, default=32,
                    help="מספר הפיצ'רים לקלט המודל (ברירת מחדל: ייגזר מ-embedding_matrix)")
-    p.add_argument("--nout", type=int, default=None,
+    p.add_argument("--nout", type=int, default=32,
                    help="מספר יחידות פלט של המודל (ברירת מחדל: יוגדר לפי num_classes)")
     p.add_argument("--seq-model", dest="seq_model", type=str, default="gru",
                    choices=["gru", "lstm", "transformer", "none"],
@@ -89,11 +89,11 @@ def parse_args():
                    help="גודל החבוי של מודל הרצף")
     p.add_argument("--seq-layers", dest="seq_layers", type=int, default=1,
                    help="מספר שכבות במודל הרצף")
-    p.add_argument("--seq-dropout", dest="seq_dropout", type=float, default=0.1,
+    p.add_argument("--seq-dropout", dest="seq_dropout", type=float, default=0.0,
                    help="Dropout בתוך מודל הרצף")
 
     # אימון
-    p.add_argument("--max-epoch", type=int, default=50, help="מספר אפוקים לאימון Dynhat")
+    p.add_argument("--max-epoch", type=int, default=None, help="מספר אפוקים לאימון Dynhat")
     p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
     p.add_argument("--weight-decay", type=float, default=5e-4, help="למידה - Adam weight decay")
 
@@ -112,7 +112,7 @@ def parse_args():
     p.add_argument("--noise-percent", type=float, default=0.05, help="k% צמתי רעש מכלל הצמתים")
     p.add_argument("--noise-connect-prob", type=float, default=0.5, help="הסתברות חיבור רעש↔מקוריים")
     p.add_argument("--noise-iters", type=int, default=30, help="מספר איטרציות ולידציה עם רעש")
-    p.add_argument("--random-state", type=int, default=42, help="זרע רנדומי לשחזוריות")
+    p.add_argument("--random-state", type=int, default=1024, help="זרע רנדומי לשחזוריות")
 
     return p.parse_args()
 
@@ -124,7 +124,7 @@ def _ensure_dynhat_defaults(args):
     """
     defaults = {
         "nhid": 64,
-        "dropout": 0.5,
+        "dropout": 0.0,
         "attn_dropout": 0.0,
         "feat_dropout": 0.0,
         "alpha": 0.2,
@@ -401,10 +401,6 @@ def main():
     args.num_classes = int(labels.max().item() + 1)
     if not hasattr(args, "nclass"):
         args.nclass = args.num_classes
-
-    # nout (מס' יחידות פלט) = מספר מחלקות
-    if getattr(args, "nout", None) in (None, 0):
-        args.nout = args.num_classes
 
     # בעיית מחלקה אחת → אין CrossEntropy
     single_class_problem = args.num_classes < 2
