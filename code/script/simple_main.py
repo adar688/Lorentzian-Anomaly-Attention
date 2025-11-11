@@ -73,6 +73,12 @@ def parse_args():
 # ===============
 def main():
     args = parse_args()
+
+    args.fix_curvature = True          # ← חובה כדי ש-Dynhat ייצור self.c
+    if not hasattr(args, "curvature"):
+        args.curvature = 1.0           # ערך סטנדרטי ללורנץ
+    if not hasattr(args, "device"):
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(args.device)
 
     # ---------------------------------------------
