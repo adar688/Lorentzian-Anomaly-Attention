@@ -226,7 +226,7 @@ def validate_with_noise_injection(
                 h_t = model(edge_index_noisy, x=node_features_over_time_noisy[:, t, :])  # [N', F']
                 outputs_t.append(h_t)
             X_noisy = torch.stack(outputs_t, dim=1)                 # [N', T, F']
-            att_output_noisy = model.ddy_attention_layer(X_noisy)   # רצוי [N', T, F_att]
+            att_output_noisy = model.seq_model(X_noisy)   # רצוי [N', T, F_att]
             if att_output_noisy.ndim == 2:
                 att_output_noisy = att_output_noisy.unsqueeze(1)    # [N', 1, F_att]
             Np, Tp, Fp = att_output_noisy.shape
