@@ -319,7 +319,13 @@ def main():
     print("Top-20 LOF(mean):",  res["top_mu_lof_idx"])
     print("Top-20 LOF(std):",   res["top_std_lof_idx"])
 
-    plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=20)
+    plot_anomaly_scores(
+    mu_if=res["mu_if"],
+    std_if=res["std_if"],
+    mu_lof=res["mu_lof"],
+    std_lof=res["std_lof"],
+    top_k=20
+)
 
 if __name__ == "__main__":
     main()
