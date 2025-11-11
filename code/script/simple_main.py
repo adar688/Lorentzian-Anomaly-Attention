@@ -20,7 +20,10 @@ from torch_geometric.utils import from_scipy_sparse_matrix
 from models.Dynhat import Dynhat
 from script.utils.dynamic_node2vec import load_manifest_and_snapshots, build_dynamic_node2vec
 from script.utils.dataUtils import load_citation_data  # מחזיר adj, features_sp, labels, idx_train, idx_val, idx_test
-
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
 
 # ======================
 #   ארגומנטים מינימליים
@@ -66,6 +69,86 @@ def parse_args():
 
     return p.parse_args()
 
+
+def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
+    """
+    att: torch.Tensor of shape [N, T, C] or [N, C]
+    מחזיר dict עם ציוני IF/LOF (ממוצע וסטיית תקן לכל צומת) + אינדקסים של Top-K.
+    """
+    # הפוך ל-[N, T, C]
+    if att.dim() == 2:
+        att = att.unsqueeze(1)
+    A = att.detach().cpu().numpy()  # [N, T, C]
+    N, T, C = A.shape
+
+    # מכולות תוצאות
+    AS_if  = np.full((N, T), np.nan, dtype=np.float32)
+    AS_lof = np.full((N, T), np.nan, dtype=np.float32)
+
+    # פרמטרי LOF תקפים
+    lof_k = max(2, min(lof_k, N-1))
+    # הגנה קטנה על contamination
+    contamination = float(np.clip(contamination, 1.0 / max(N,1), 0.2))
+
+    # לכל זמן — נרמל עמודות, ואז IF/LOF
+    for t in range(T):
+        X_t = A[:, t, :]                   # [N, C]
+        # נירמול פשוט ו־NaN guards
+        X_t = np.nan_to_num(X_t, nan=0.0, posinf=1e6, neginf=-1e6)
+        col_std = X_t.std(axis=0)
+        informative = col_std > 0
+        if informative.sum() == 0:
+            continue
+        X_t = X_t[:, informative]
+        X_t = MinMaxScaler().fit_transform(X_t)
+
+        # IF
+        try:
+            if_clf = IsolationForest(
+                n_estimators=100,
+                contamination=contamination,
+                random_state=42,
+                n_jobs=-1
+            ).fit(X_t)
+            AS_if[:, t] = -if_clf.decision_function(X_t)
+        except Exception:
+            pass
+
+        # LOF
+        try:
+            lof = LocalOutlierFactor(
+                n_neighbors=lof_k,
+                contamination=contamination,
+                novelty=False,
+                n_jobs=-1
+            )
+            _ = lof.fit_predict(X_t)
+            AS_lof[:, t] = -(lof.negative_outlier_factor_)
+        except Exception:
+            pass
+
+    # סיכום לכל צומת
+    mu_if   = np.nanmean(AS_if,  axis=1)
+    std_if  = np.nanstd(AS_if,   axis=1)
+    mu_lof  = np.nanmean(AS_lof, axis=1)
+    std_lof = np.nanstd(AS_lof,  axis=1)
+
+    # Top-K אינדקסים (גדול=יותר חריג)
+    def topk_idx(v, k):
+        v = np.nan_to_num(v, nan=-1e30)
+        k = min(k, len(v))
+        return np.argsort(-v)[:k]
+
+    return {
+        "mu_if":   mu_if,
+        "std_if":  std_if,
+        "mu_lof":  mu_lof,
+        "std_lof": std_lof,
+        "top_mu_if_idx":   topk_idx(mu_if,  topk),
+        "top_std_if_idx":  topk_idx(std_if, topk),
+        "top_mu_lof_idx":  topk_idx(mu_lof, topk),
+        "top_std_lof_idx": topk_idx(std_lof, topk),
+    }
 
 
 # ===============
@@ -183,6 +266,14 @@ def main():
           f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}")
     # אפשר להוסיף כאן שמירה לקובץ אם רוצים:
     # torch.save({"att_output": att_out.cpu()}, "att_output.pt")
+
+
+    res = run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20)
+    print("Top-20 IF(mean):",   res["top_mu_if_idx"])
+    print("Top-20 IF(std):",    res["top_std_if_idx"])
+    print("Top-20 LOF(mean):",  res["top_mu_lof_idx"])
+    print("Top-20 LOF(std):",   res["top_std_lof_idx"])
+
 
 
 if __name__ == "__main__":
