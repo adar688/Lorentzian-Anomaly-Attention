@@ -94,7 +94,7 @@ def parse_args():
                    help="Dropout בתוך מודל הרצף")
 
     # אימון
-    p.add_argument("--max-epoch", type=int, default=None, help="מספר אפוקים לאימון Dynhat")
+    p.add_argument("--max-epoch", type=int, default=32, help="מספר אפוקים לאימון Dynhat")
     p.add_argument("--lr", type=float, default=1e-2, help="למידה - Adam LR")
     p.add_argument("--weight-decay", type=float, default=5e-4, help="למידה - Adam weight decay")
 
