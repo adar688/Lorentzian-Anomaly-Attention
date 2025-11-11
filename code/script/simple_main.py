@@ -15,12 +15,12 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from torch_geometric.utils import from_scipy_sparse_matrix
+import matplotlib.pyplot as plt
 
 # מודלים/כלים פנימיים
 from models.Dynhat import Dynhat
 from script.utils.dynamic_node2vec import load_manifest_and_snapshots, build_dynamic_node2vec
 from script.utils.dataUtils import load_citation_data  # מחזיר adj, features_sp, labels, idx_train, idx_val, idx_test
-import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
@@ -151,6 +151,51 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
     }
 
 
+
+def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None):
+    """
+    מצייר גרפים של ציוני אנומליה (mean ו־std) עבור כל צומת בכל אחד מהאלגוריתמים (IF, LOF).
+    ציר X – מזהה צומת, ציר Y – ערך הציון.
+    """
+
+    N = len(mu_if)
+    x = np.arange(N)
+
+    plt.figure(figsize=(12, 6))
+    plt.scatter(x, mu_if, s=8, color='blue', alpha=0.6, label='IF mean (μ)')
+    plt.scatter(x, mu_lof, s=8, color='orange', alpha=0.6, label='LOF mean (μ)')
+    plt.xlabel("Node ID (i)")
+    plt.ylabel("Mean anomaly score")
+    plt.title("Mean (μ) anomaly scores per node (IF vs LOF)")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(12, 6))
+    plt.scatter(x, std_if, s=8, color='green', alpha=0.6, label='IF std (σ)')
+    plt.scatter(x, std_lof, s=8, color='red', alpha=0.6, label='LOF std (σ)')
+    plt.xlabel("Node ID (i)")
+    plt.ylabel("Standard deviation of anomaly score")
+    plt.title("Standard deviation (σ) of anomaly scores per node (IF vs LOF)")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # גרף משולב אופציונלי (אם תרצי)
+    if top_k is not None:
+        top_nodes = np.argsort(-mu_if)[:top_k]
+        plt.figure(figsize=(10, 5))
+        plt.bar(top_nodes, mu_if[top_nodes], color='steelblue', label='Top IF mean')
+        plt.bar(top_nodes, std_if[top_nodes], color='lightcoral', alpha=0.6, label='Top IF std')
+        plt.xlabel("Node ID (Top-K by IF mean)")
+        plt.ylabel("Score value")
+        plt.title(f"Top-{top_k} nodes by IF mean & std")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+
+
 # ===============
 #     MAIN
 # ===============
@@ -274,7 +319,7 @@ def main():
     print("Top-20 LOF(mean):",  res["top_mu_lof_idx"])
     print("Top-20 LOF(std):",   res["top_std_lof_idx"])
 
-
+    plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=20)
 
 if __name__ == "__main__":
     main()
