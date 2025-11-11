@@ -293,14 +293,19 @@ def main():
     df_tb, bin_edges = time_binning(df, T=TIME_STAMPS)
     snapshots = build_dynamic_snapshots(df_tb, id2idx, T=TIME_STAMPS)
 
-    # === SAVE META ===
+# === SAVE META ===
     save_json(OUTPUT_DIR / "manifest.json",
-              {"time_bins": TIME_STAMPS, "bin_edges": bin_edges.tolist(), "num_nodes": len(id2idx)})
+          {"time_bins": TIME_STAMPS, "bin_edges": bin_edges.tolist(), "num_nodes": len(id2idx)})
 
-    save_json(OUTPUT_DIR / "vocab.json", {"feature_names": getattr(CountVectorizer(), "get_feature_names_out", lambda: [])()})
-    # נשמור שמות מחלקות (מסודרים לפי ה־encoder)
+    # שמות פיצ'רים - להשתמש בוקטורייזר המאומן!
+    try:
+        feature_names = vec.get_feature_names_out().tolist()
+    except Exception:
+        feature_names = list(getattr(vec, "vocabulary_", {}).keys())
+    save_json(OUTPUT_DIR / "vocab.json", {"feature_names": feature_names})
+
+    # שמות מחלקות לפי ה-LabelEncoder
     save_json(OUTPUT_DIR / "label_classes.json", {"classes": le.classes_.tolist()})
-    # בנוסף, נשמור גם את ה־raw labels לשחזור/דיבוג
     np.save(OUTPUT_DIR / "labels_raw.npy", y_raw)
 
     # ספליטים לשחזור
