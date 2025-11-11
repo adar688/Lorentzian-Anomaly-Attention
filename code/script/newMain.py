@@ -11,6 +11,7 @@ import sys
 import argparse
 import copy
 import re
+import json  # ← NEW: needed for reading label_binarizer.json
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -386,6 +387,35 @@ def main():
         data_path=args.data_root
     )
 
+    # ======== DEBUG BLOCK: class counts overall + per split ========  ← NEW
+    print("\n[DEBUG] labels_np shape:", labels_np.shape, "dtype:", getattr(labels_np, "dtype", type(labels_np)))
+    labels_vec = labels_np
+    if getattr(labels_vec, "ndim", 1) == 2 and labels_vec.shape[1] > 1:
+        labels_vec = labels_vec.argmax(1)
+
+    uniq_all, cnt_all = np.unique(labels_vec, return_counts=True)
+    print("[DEBUG] classes in ALL:", dict(zip(uniq_all.tolist(), cnt_all.tolist())))
+
+    def _dist(name, v):
+        u, c = np.unique(v, return_counts=True)
+        print(f"[DEBUG] classes in {name}:", dict(zip(u.tolist(), c.tolist())))
+
+    _dist("TRAIN", labels_vec[idx_train])
+    _dist("VAL",   labels_vec[idx_val])
+    _dist("TEST",  labels_vec[idx_test])
+
+    lb_path = os.path.join(args.data_root, "label_binarizer.json")
+    if os.path.exists(lb_path):
+        try:
+            with open(lb_path, "r", encoding="utf-8") as f:
+                lbj = json.load(f)
+            print("[DEBUG] label_binarizer classes_:", lbj.get("classes"))
+        except Exception as e:
+            print("[DEBUG] failed reading label_binarizer.json:", e)
+    else:
+        print("[DEBUG] label_binarizer.json not found at", lb_path)
+    # ======== END DEBUG BLOCK ========
+
     edge_index, _ = from_scipy_sparse_matrix(adj)
     features = torch.FloatTensor(features_sp.todense()).to(device)
     labels = torch.LongTensor(labels_np).to(device)
@@ -421,7 +451,7 @@ def main():
 
     train_losses: list[float] = []
 
-    if not single_class_problem:
+    if not single_class_problem and args.max_epoch:
         for epoch in range(args.max_epoch):
             model.train()
             optimizer.zero_grad()
@@ -445,6 +475,8 @@ def main():
 
             train_losses.append(loss.item())
             print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
+    elif not single_class_problem and args.max_epoch is None:
+        print("ℹ Training skipped because --max-epoch=None (set a value to train).")
     else:
         print("⚠ Detected a single class in labels. Skipping supervised cross-entropy training.")
         model.eval()
