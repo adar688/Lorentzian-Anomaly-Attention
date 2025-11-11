@@ -456,23 +456,40 @@ def main():
             model.train()
             optimizer.zero_grad()
 
-            # 1) Forward על כל ה-T טיימסטמפים
             temporal_outputs = []
             for t in range(T_bins):
-                x_t = embedding_matrix[:, t, :].to(device)  # [N, F]
-                h_t = model(edge_index, x=x_t)              # [N, C]
+                x_t = embedding_matrix[:, t, :].to(device)
+                # נרמול וזהירות מ-NaN לפני הכנסה למודל
+                x_t = torch.nan_to_num(x_t, nan=0.0, posinf=1e6, neginf=-1e6)
+                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * 0.1  # מונע גדילה מוגזמת במניפולד
+                h_t = model(edge_index, x=x_t)
+                # גם אחרי ה-Forward:
+                h_t = torch.nan_to_num(h_t, nan=0.0, posinf=1e6, neginf=-1e6)
                 temporal_outputs.append(h_t)
 
-            # 2) “קריאת רצף” (seq_model) → logits אחרונים
             X = torch.stack(temporal_outputs, dim=1)        # [N, T, C]
             att = model.seq_model(X)                        # [N, T, C] או [N, C]
-            logits = att[:, -1, :] if att.ndim == 3 else att  # [N, C]
+            if att.ndim == 2:
+                att = att.unsqueeze(1)
 
-            # 3) Loss + עדכון משקולות
+            logits = att[:, -1, :]  # [N, C] לסיווג בזמן האחרון
+
+            # גרד-רייל לפני חישוב ה-Loss
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=1e6, neginf=-1e6)
+
             loss = F.cross_entropy(logits[idx_train], labels[idx_train])
-            loss.backward()
-            optimizer.step()
+            if not torch.isfinite(loss):
+                print(f"[Epoch {epoch}] Loss is not finite (got {loss.item()}). Reducing LR ×0.1 and skipping step.")
+                for g in optimizer.param_groups:
+                    g['lr'] = max(g['lr'] * 0.1, 1e-5)
+                continue
 
+            loss.backward()
+
+            # קליפינג של גרדיאנטים כדי למנוע התפוצצות
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            optimizer.step()
             train_losses.append(loss.item())
             print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
     elif not single_class_problem and args.max_epoch is None:
@@ -511,6 +528,12 @@ def main():
     for t in range(T_eval):
         X_t = att_output[:, t, :].detach().cpu().numpy()
 
+        # ניקוי NaN/Inf לפני סקיילר/LOF
+        if not np.isfinite(X_t).all():
+            n_bad = np.size(X_t) - np.isfinite(X_t).sum()
+            print(f"[WARN] Found {n_bad} non-finite entries at t={t}. Applying nan_to_num.")
+            X_t = np.nan_to_num(X_t, nan=0.0, posinf=1e6, neginf=-1e6)
+
         scaler_t = MinMaxScaler()
         X_t_scaled = scaler_t.fit_transform(X_t)
 
@@ -530,7 +553,7 @@ def main():
             n_jobs=-1
         )
         _ = lof_t.fit_predict(X_t_scaled)
-        AS_lof[:, t] = -(lof_t.negative_outlier_factor_)  # גדול = יותר חריג
+        AS_lof[:, t] = -(lof_t.negative_outlier_factor_)
 
     # פרופילים סטטיסטיים פר-צומת על פני הזמן (ממוצע ו-STD)
     mu_if  = AS_if.mean(axis=1)
