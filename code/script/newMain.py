@@ -105,11 +105,11 @@ def parse_args():
 
     # אנומליות
     p.add_argument("--contamination", type=float, default=0.05, help="אחוז אנומליות משוער ל-IF/LOF")
-    p.add_argument("--lof-n-neighbors", type=int, default=20, help="k של LOF")
+    p.add_argument("--lof-n-neighbors", type=int, default=30, help="k של LOF")
     p.add_argument("--topk", type=int, default=20, help="Top-K להצגה/ניתוח (לא חובה)")
 
     # רעש (Stage 4)
-    p.add_argument("--noise-percent", type=float, default=0.05, help="k% צמתי רעש מכלל הצמתים")
+    p.add_argument("--noise-percent", type=float, default=0.1, help="k% צמתי רעש מכלל הצמתים")
     p.add_argument("--noise-connect-prob", type=float, default=0.5, help="הסתברות חיבור רעש↔מקוריים")
     p.add_argument("--noise-iters", type=int, default=30, help="מספר איטרציות ולידציה עם רעש")
     p.add_argument("--random-state", type=int, default=1024, help="זרע רנדומי לשחזוריות")
