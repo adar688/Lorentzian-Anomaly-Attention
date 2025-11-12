@@ -357,6 +357,9 @@ def main():
     print("Top-20 LOF(mean):",  res["top_mu_lof_idx"])
     print("Top-20 LOF(std):",   res["top_std_lof_idx"])
 
+    print("Min std_if:", np.min(res["std_if"]))
+    print("Min std_lof:", np.min(res["std_lof"]))
+
     plot_anomaly_scores(
         mu_if=res["mu_if"],
         std_if=res["std_if"],
