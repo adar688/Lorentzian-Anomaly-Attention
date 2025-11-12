@@ -207,10 +207,12 @@ def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="pl
         plt.close()
         print(f"💾 Saved: {os.path.join(save_dir, f'top_{top_k}_if_scores.png')}")
 
+
 def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: str = "plots"):
     """
-    מצייר גרף של ממוצע (Mean) וסטיית תקן (Std) עבור כל צומת.
-    מדגיש את ה-Top K הערכים הגבוהים ביותר בכל קטגוריה.
+    מצייר שני גרפים נפרדים:
+    1. גרף Mean (μ) לכל צומת עם הדגשת ה-Top K
+    2. גרף Std Dev (σ) לכל צומת עם הדגשת ה-Top K
     """
 
     # יצירת תיקייה לשמירה אם לא קיימת
@@ -219,39 +221,56 @@ def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: st
     N = len(mu)
     x = np.arange(N)
 
-    # הגנה על ערכים חריגים (NaN, inf)
+    # ניקוי ערכים חריגים (NaN / inf)
     mu = np.nan_to_num(mu, nan=0.0, posinf=np.max(mu[np.isfinite(mu)]), neginf=0.0)
     std = np.nan_to_num(std, nan=0.0, posinf=np.max(std[np.isfinite(std)]), neginf=0.0)
 
-    # פתיחת גרף
+    # ---------------------------------------------------------
+    # גרף 1 — Mean (μ)
+    # ---------------------------------------------------------
     plt.figure(figsize=(12, 6))
+    plt.bar(x, mu, color='skyblue', alpha=0.7, label='Mean (μ)')
 
-    # ציור העמודות
-    plt.bar(x - 0.2, mu, width=0.4, color='skyblue', alpha=0.7, label='Mean (μ)')
-    plt.bar(x + 0.2, std, width=0.4, color='orange', alpha=0.7, label='Std Dev (σ)')
-
-    # חישוב והדגשה של הצמתים החריגים ביותר
+    # הדגשת הצמתים החריגים ביותר לפי mean
     top_mean_idx = np.argsort(-mu)[:top_k]
-    top_std_idx = np.argsort(-std)[:top_k]
-
     plt.scatter(top_mean_idx, mu[top_mean_idx], color='red', s=80, label=f'Top {top_k} Mean')
-    plt.scatter(top_std_idx, std[top_std_idx], color='purple', s=80, label=f'Top {top_k} Std')
 
-    # פרטים גרפיים
-    plt.title('Isolation Forest — Mean & Std per Node', fontsize=14)
+    plt.title('Isolation Forest — Mean (μ) per Node', fontsize=14)
     plt.xlabel('Node index (i)', fontsize=12)
-    plt.ylabel('Score value', fontsize=12)
-    plt.ylim(bottom=0)  # רק ערכים חיוביים — אין std שלילי
+    plt.ylabel('Mean anomaly score', fontsize=12)
+    plt.ylim(bottom=0)
     plt.legend()
     plt.grid(True, alpha=0.3, linestyle='--')
     plt.tight_layout()
 
-    # שמירת הקובץ
-    out_path = os.path.join(save_dir, "plot_mean_std.png")
-    plt.savefig(out_path, dpi=150)
+    mean_path = os.path.join(save_dir, "plot_mean.png")
+    plt.savefig(mean_path, dpi=150)
     plt.close()
+    print(f"💾 Saved: {mean_path}")
 
-    print(f"💾 Saved plot: {out_path}")
+    # ---------------------------------------------------------
+    # גרף 2 — Std Dev (σ)
+    # ---------------------------------------------------------
+    plt.figure(figsize=(12, 6))
+    plt.bar(x, std, color='orange', alpha=0.7, label='Std Dev (σ)')
+
+    # הדגשת הצמתים החריגים ביותר לפי std
+    top_std_idx = np.argsort(-std)[:top_k]
+    plt.scatter(top_std_idx, std[top_std_idx], color='purple', s=80, label=f'Top {top_k} Std')
+
+    plt.title('Isolation Forest — Standard Deviation (σ) per Node', fontsize=14)
+    plt.xlabel('Node index (i)', fontsize=12)
+    plt.ylabel('Standard deviation of anomaly score', fontsize=12)
+    plt.ylim(bottom=0)
+    plt.legend()
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.tight_layout()
+
+    std_path = os.path.join(save_dir, "plot_std.png")
+    plt.savefig(std_path, dpi=150)
+    plt.close()
+    print(f"💾 Saved: {std_path}")
+
 
 # ===============
 #     MAIN
