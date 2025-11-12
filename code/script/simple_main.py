@@ -207,21 +207,18 @@ def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="pl
         plt.close()
         print(f"💾 Saved: {os.path.join(save_dir, f'top_{top_k}_if_scores.png')}")
 
-def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10,  save_dir="plots"):
+def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir="plots"):
+    os.makedirs(save_dir, exist_ok=True)  # 👈 להבטיח שהתיקייה קיימת
     N = len(mu)
     x = np.arange(N)
 
     plt.figure(figsize=(11, 6))
-
-    # ציור mean ו-std כעמודות
     plt.bar(x - 0.2, mu, width=0.4, color='skyblue', alpha=0.7, label='Mean (μ)')
     plt.bar(x + 0.2, std, width=0.4, color='orange', alpha=0.7, label='Std Dev (σ)')
 
-    # הדגשת חריגים לפי mean
     top_mean_idx = np.argsort(-mu)[:top_k]
     plt.scatter(top_mean_idx, mu[top_mean_idx], color='red', s=80, label=f'Top {top_k} Mean')
 
-    # הדגשת חריגים לפי std
     top_std_idx = np.argsort(-std)[:top_k]
     plt.scatter(top_std_idx, std[top_std_idx], color='purple', s=80, label=f'Top {top_k} Std')
 
@@ -231,10 +228,11 @@ def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10,  save_dir="p
     plt.legend()
     plt.grid(True, alpha=0.3, linestyle='--')
     plt.tight_layout()
-    plt.show()
-    plt.savefig(os.path.join(save_dir, "plot_mean_std.png"))
+    plt.savefig(os.path.join(save_dir, "plot_mean_std.png"))  # 👈 קודם לשמור
+    # plt.show()  # אופציונלי; אם מריצים בסביבה ללא GUI עדיף להשאיר בהערה
     plt.close()
     print(f"💾 Saved: {os.path.join(save_dir, 'plot_mean_std.png')}")
+
 
 # ===============
 #     MAIN
@@ -367,7 +365,8 @@ def main():
         top_k=20,
         save_dir="plots"   # ניתן לשנות לנתיב אחר, למשל "results/graphs"
     )
-    plot_mean_std( mu_if=res["mu_if"], std_if=res["std_if"], top_k=20, save_dir="plots" )
+    plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
+
 
 
 if __name__ == "__main__":
