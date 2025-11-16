@@ -513,8 +513,8 @@ def main():
             save_dir="plots"
         )
 
-    plot_hist_distribution(mu, "Distribution of Mean (μ) anomaly scores", "Mean (μ) value", "plots/hist_mean.png")
-    plot_hist_distribution(std, "Distribution of Std (σ) anomaly scores", "Std (σ) value", "plots/hist_std.png")
+    plot_hist_distribution(res["mu_if"], "Distribution of Mean (μ) anomaly scores", "Mean (μ) value", "plots/hist_mean.png")
+    plot_hist_distribution(res["std_if"], "Distribution of Std (σ) anomaly scores", "Std (σ) value", "plots/hist_std.png")
 
 
 
