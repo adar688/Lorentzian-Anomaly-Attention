@@ -70,30 +70,26 @@ def parse_args():
     return p.parse_args()
 
 
+# --- UPDATE: also return time-series matrices for plotting ---
 def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
     """
     att: torch.Tensor of shape [N, T, C] or [N, C]
-    מחזיר dict עם ציוני IF/LOF (ממוצע וסטיית תקן לכל צומת) + אינדקסים של Top-K.
+    Returns a dict of IF/LOF summary stats per node (mean/std) + Top-K indices,
+    and also the raw time-series anomaly matrices AS_if, AS_lof with shape [N, T].
     """
-    # הפוך ל-[N, T, C]
     if att.dim() == 2:
         att = att.unsqueeze(1)
     A = att.detach().cpu().numpy()  # [N, T, C]
     N, T, C = A.shape
 
-    # מכולות תוצאות
     AS_if  = np.full((N, T), np.nan, dtype=np.float32)
     AS_lof = np.full((N, T), np.nan, dtype=np.float32)
 
-    # פרמטרי LOF תקפים
     lof_k = max(2, min(lof_k, N-1))
-    # הגנה קטנה על contamination
     contamination = float(np.clip(contamination, 1.0 / max(N,1), 0.2))
 
-    # לכל זמן — נרמל עמודות, ואז IF/LOF
     for t in range(T):
-        X_t = A[:, t, :]                   # [N, C]
-        # נירמול פשוט ו־NaN guards
+        X_t = A[:, t, :]
         X_t = np.nan_to_num(X_t, nan=0.0, posinf=1e6, neginf=-1e6)
         col_std = X_t.std(axis=0)
         informative = col_std > 0
@@ -102,7 +98,6 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
         X_t = X_t[:, informative]
         X_t = MinMaxScaler().fit_transform(X_t)
 
-        # IF
         try:
             if_clf = IsolationForest(
                 n_estimators=100,
@@ -114,7 +109,6 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
         except Exception:
             pass
 
-        # LOF
         try:
             lof = LocalOutlierFactor(
                 n_neighbors=lof_k,
@@ -127,13 +121,11 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
         except Exception:
             pass
 
-    # סיכום לכל צומת
     mu_if   = np.nanmean(AS_if,  axis=1)
     std_if  = np.nanstd(AS_if,   axis=1)
     mu_lof  = np.nanmean(AS_lof, axis=1)
     std_lof = np.nanstd(AS_lof,  axis=1)
 
-    # Top-K אינדקסים (גדול=יותר חריג)
     def topk_idx(v, k):
         v = np.nan_to_num(v, nan=-1e30)
         k = min(k, len(v))
@@ -148,13 +140,10 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
         "top_std_if_idx":  topk_idx(std_if, topk),
         "top_mu_lof_idx":  topk_idx(mu_lof, topk),
         "top_std_lof_idx": topk_idx(std_lof, topk),
+        # NEW: full time-series matrices
+        "AS_if": AS_if,
+        "AS_lof": AS_lof,
     }
-
-
-
-import os
-import matplotlib.pyplot as plt
-import numpy as np
 
 def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="plots"):
     """
@@ -270,6 +259,89 @@ def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: st
     plt.savefig(std_path, dpi=150)
     plt.close()
     print(f"💾 Saved: {std_path}")
+
+
+def plot_nodes_hist_mean(mu: np.ndarray, method: str = "IF", save_dir: str = "plots"):
+    """
+    Bar chart over all nodes: X = node id, Y = mean anomaly score (μ).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    N = len(mu)
+    x = np.arange(N)
+
+    mu = np.nan_to_num(mu, nan=0.0, posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0, neginf=0.0)
+
+    plt.figure(figsize=(14, 6))
+    plt.bar(x, mu, alpha=0.8)
+    plt.title(f"{method} — Mean (μ) per node")
+    plt.xlabel("Node ID")
+    plt.ylabel("Mean anomaly score")
+    plt.tight_layout()
+    out = os.path.join(save_dir, f"{method.lower()}_nodes_mean_bar.png")
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"💾 Saved: {out}")
+
+
+def plot_nodes_hist_std(std: np.ndarray, method: str = "IF", save_dir: str = "plots"):
+    """
+    Bar chart over all nodes: X = node id, Y = std of anomaly score (σ).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    N = len(std)
+    x = np.arange(N)
+
+    std = np.nan_to_num(std, nan=0.0, posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0, neginf=0.0)
+
+    plt.figure(figsize=(14, 6))
+    plt.bar(x, std, alpha=0.8)
+    plt.title(f"{method} — Std (σ) per node")
+    plt.xlabel("Node ID")
+    plt.ylabel("Std of anomaly score")
+    plt.tight_layout()
+    out = os.path.join(save_dir, f"{method.lower()}_nodes_std_bar.png")
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"💾 Saved: {out}")
+
+def plot_most_anomalous_node_timeseries(
+    AS_if: np.ndarray,
+    mu_if: np.ndarray,
+    AS_lof: np.ndarray | None = None,
+    save_dir: str = "plots"
+):
+    """
+    Plot the time-series of the most anomalous node (by IF mean μ) across snapshots.
+    X = time index (t), Y = anomaly score at time t.
+
+    If AS_lof is provided, also overlay LOF for the same node for comparison.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    # pick node with highest IF mean
+    node_idx = int(np.argmax(np.nan_to_num(mu_if, nan=-1e30)))
+
+    y_if = AS_if[node_idx, :]
+    t = np.arange(y_if.shape[0])
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(t, y_if, marker='o', linewidth=1.5, label='IF')
+
+    if AS_lof is not None and AS_lof.shape == AS_if.shape:
+        y_lof = AS_lof[node_idx, :]
+        plt.plot(t, y_lof, marker='x', linestyle='--', linewidth=1.2, label='LOF')
+
+    plt.title(f"Most anomalous node time-series (node {node_idx})")
+    plt.xlabel("Time (snapshot index)")
+    plt.ylabel("Anomaly score")
+    plt.grid(True, alpha=0.3, linestyle="--")
+    plt.legend()
+    plt.tight_layout()
+    out = os.path.join(save_dir, f"top_node_{node_idx}_timeseries.png")
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"💾 Saved: {out}")
+    return node_idx
 
 
 # ===============
@@ -407,6 +479,22 @@ def main():
         save_dir="plots"   # ניתן לשנות לנתיב אחר, למשל "results/graphs"
     )
     plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
+
+       # --- NEW: requested charts ---
+    # 1) "Histogram" (bar) for mean per node (IF)
+    plot_nodes_hist_mean(res["mu_if"], method="IF", save_dir="plots")
+
+    # 2) "Histogram" (bar) for std per node (IF)
+    plot_nodes_hist_std(res["std_if"], method="IF", save_dir="plots")
+
+    # 3) Time-series of most anomalous node (by IF mean)
+    if "AS_if" in res:
+        _ = plot_most_anomalous_node_timeseries(
+            AS_if=res["AS_if"],
+            mu_if=res["mu_if"],
+            AS_lof=res.get("AS_lof"),
+            save_dir="plots"
+        )
 
 
 
