@@ -344,6 +344,23 @@ def plot_most_anomalous_node_timeseries(
     return node_idx
 
 
+def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_path: str):
+    """
+    Plot histogram of anomaly scores (distribution across nodes).
+    """
+    values = np.nan_to_num(values, nan=0.0)
+    plt.figure(figsize=(10, 6))
+    plt.hist(values, bins=30, color='skyblue', edgecolor='black', alpha=0.7)
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel("Number of nodes")
+    plt.grid(True, alpha=0.3, linestyle="--")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"💾 Saved: {save_path}")
+
+
 # ===============
 #     MAIN
 # ===============
@@ -495,6 +512,10 @@ def main():
             AS_lof=res.get("AS_lof"),
             save_dir="plots"
         )
+
+    plot_hist_distribution(mu, "Distribution of Mean (μ) anomaly scores", "Mean (μ) value", "plots/hist_mean.png")
+    plot_hist_distribution(std, "Distribution of Std (σ) anomaly scores", "Std (σ) value", "plots/hist_std.png")
+
 
 
 
