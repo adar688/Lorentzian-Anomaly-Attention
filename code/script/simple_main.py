@@ -334,42 +334,43 @@ def plot_nodes_hist_std(std: np.ndarray, method: str = "IF", save_dir: str = "pl
     print(f"💾 Saved: {out}")
 
 
-def plot_most_anomalous_node_timeseries(
-    AS_if: np.ndarray,
-    mu_if: np.ndarray,
-    AS_lof: np.ndarray | None = None,
+def plot_top_node_timeseries_by_method(
+    AS: np.ndarray,
+    mu: np.ndarray,
+    method_name: str,
     save_dir: str = "plots"
-):
+) -> int:
     """
-    Plot the time-series of the most anomalous node (by IF mean μ) across snapshots.
-    X = time index (t), Y = anomaly score at time t.
-    Optionally overlay LOF for the same node if AS_lof is provided.
+    Plot time-series for the most anomalous node according to the given method.
+    - AS: [N, T] anomaly matrix for the method (already normalized to [0,1])
+    - mu: [N] per-node mean anomaly scores for the method
+    - method_name: "IF" or "LOF" (used for labels and filename)
+    Returns: selected node index.
     """
     os.makedirs(save_dir, exist_ok=True)
+    if AS is None or mu is None or len(mu) == 0:
+        print(f"[{method_name}] No data to plot.")
+        return -1
 
-    node_idx = int(np.argmax(np.nan_to_num(mu_if, nan=-1e30)))
-
-    y_if = AS_if[node_idx, :]
-    t = np.arange(y_if.shape[0])
+    node_idx = int(np.argmax(np.nan_to_num(mu, nan=-1e30)))
+    y = AS[node_idx, :]
+    t = np.arange(y.shape[0])
 
     plt.figure(figsize=(12, 5))
-    plt.plot(t, y_if, marker='o', linewidth=1.5, label='IF')
-
-    if AS_lof is not None and AS_lof.shape == AS_if.shape:
-        y_lof = AS_lof[node_idx, :]
-        plt.plot(t, y_lof, marker='x', linestyle='--', linewidth=1.2, label='LOF')
-
-    plt.title(f"Most anomalous node time-series (node {node_idx})")
+    plt.plot(t, y, marker='o', linewidth=1.5, label=method_name)
+    plt.title(f"Most anomalous node time-series by {method_name} (node {node_idx})")
     plt.xlabel("Time (snapshot index)")
     plt.ylabel("Anomaly score")
     plt.grid(True, alpha=0.3, linestyle="--")
     plt.legend()
     plt.tight_layout()
-    out = os.path.join(save_dir, f"top_node_{node_idx}_timeseries.png")
+
+    out = os.path.join(save_dir, f"top_node_{method_name.lower()}_{node_idx}_timeseries.png")
     plt.savefig(out, dpi=150)
     plt.close()
     print(f"💾 Saved: {out}")
     return node_idx
+
 
 
 def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_path: str):
@@ -501,6 +502,10 @@ def main():
     print("Min std_if:", np.min(res["std_if"]))
     print("Min std_lof:", np.min(res["std_lof"]))
 
+    common_top = set(res["top_mu_if_idx"]) & set(res["top_mu_lof_idx"])
+    print(f"✅ Common top anomalies between IF and LOF: {len(common_top)} nodes")
+    print(f"Common indices: {sorted(list(common_top))}")
+
     # 7) Plots (all consistent, non-negative scale)
     plot_anomaly_scores(
         mu_if=res["mu_if"],
@@ -516,15 +521,21 @@ def main():
     plot_nodes_hist_mean(res["mu_if"], method="IF", save_dir="plots")
     plot_nodes_hist_std(res["std_if"], method="IF", save_dir="plots")
 
-    # Time series for the most anomalous node
-    if "AS_if" in res:
-        _ = plot_most_anomalous_node_timeseries(
-            AS_if=res["AS_if"],
-            mu_if=res["mu_if"],
-            AS_lof=res.get("AS_lof"),
+    if "AS_if" in res and res["AS_if"] is not None:
+        plot_top_node_timeseries_by_method(
+            AS=res["AS_if"],
+            mu=res["mu_if"],
+            method_name="IF",
             save_dir="plots"
         )
 
+    if "AS_lof" in res and res["AS_lof"] is not None:
+        plot_top_node_timeseries_by_method(
+            AS=res["AS_lof"],
+            mu=res["mu_lof"],
+            method_name="LOF",
+            save_dir="plots"
+        )
     # Statistical histograms of distributions
     plot_hist_distribution(res["mu_if"], "Distribution of Mean (μ) anomaly scores", "Mean (μ) value", "plots/hist_mean.png")
     plot_hist_distribution(res["std_if"], "Distribution of Std (σ) anomaly scores", "Std (σ) value", "plots/hist_std.png")
