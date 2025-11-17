@@ -76,22 +76,19 @@ def parse_args():
 # ======================
 #   CONSISTENCY HELPERS
 # ======================
-def _shift_to_nonnegative(M: np.ndarray) -> np.ndarray:
+def _normalize_minmax(M: np.ndarray) -> np.ndarray:
     """
-    Make all scores non-negative by shifting the entire matrix so that its global min becomes 0.
-    Preserves ordering and relative differences; avoids negatives across all plots.
+    Normalize all scores to [0, 1] range for consistent visualization across methods.
+    Avoids extreme scaling from large negative or infinite values.
     """
     if M is None:
         return None
-    m = np.nanmin(M)
-    if np.isfinite(m) and m < 0:
-        M = M - m
-    # Guard against NaNs/Infs after shift
-    if np.any(np.isfinite(M)):
-        max_finite = np.nanmax(M[np.isfinite(M)])
+    M = np.nan_to_num(M, nan=0.0, posinf=0.0, neginf=0.0)
+    vmin, vmax = np.min(M), np.max(M)
+    if vmax > vmin:
+        M = (M - vmin) / (vmax - vmin)
     else:
-        max_finite = 0.0
-    M = np.nan_to_num(M, nan=0.0, posinf=max_finite, neginf=0.0)
+        M = np.zeros_like(M)
     return M
 
 
@@ -162,8 +159,9 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
             pass
 
     # Canonicalize both methods to non-negative scale (global min -> 0)
-    AS_if  = _shift_to_nonnegative(AS_if)
-    AS_lof = _shift_to_nonnegative(AS_lof)
+    AS_if  = _normalize_minmax(AS_if)
+    AS_lof = _normalize_minmax(AS_lof)
+
 
     _debug_stats("AS_if (canon)", AS_if)
     _debug_stats("AS_lof (canon)", AS_lof)
