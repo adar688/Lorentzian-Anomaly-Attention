@@ -372,6 +372,59 @@ def plot_top_node_timeseries_by_method(
     return node_idx
 
 
+def plot_if_lof_timeseries_for_nodes(
+    AS_if: np.ndarray,
+    AS_lof: np.ndarray,
+    node_indices,
+    save_dir: str = "plots/common_if_lof_timeseries"
+):
+    """
+    For each node in node_indices, plot a time-series with two lines:
+      - IF anomaly score over time
+      - LOF anomaly score over time
+
+    AS_if, AS_lof: [N, T] matrices (already normalized to [0,1]).
+    node_indices: iterable of node indices (ints).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    if AS_if is None or AS_lof is None:
+        print("[IF+LOF] Missing anomaly matrices, skipping.")
+        return
+
+    if AS_if.shape != AS_lof.shape:
+        print(f"[IF+LOF] Shape mismatch: IF {AS_if.shape}, LOF {AS_lof.shape}")
+        return
+
+    N, T = AS_if.shape
+
+    for idx in sorted(node_indices):
+        if idx < 0 or idx >= N:
+            print(f"[IF+LOF] Node index {idx} out of range, skipping.")
+            continue
+
+        y_if = np.nan_to_num(AS_if[idx, :], nan=0.0)
+        y_lof = np.nan_to_num(AS_lof[idx, :], nan=0.0)
+        t = np.arange(T)
+
+        plt.figure(figsize=(12, 5))
+        plt.plot(t, y_if, marker='o', linewidth=1.5, label='IF')
+        plt.plot(t, y_lof, marker='x', linewidth=1.5, label='LOF')
+
+        plt.title(f"Node {idx} anomaly time-series (IF vs LOF)")
+        plt.xlabel("Time (snapshot index)")
+        plt.ylabel("Anomaly score")
+        plt.grid(True, alpha=0.3, linestyle="--")
+        plt.legend()
+        plt.tight_layout()
+
+        out_path = os.path.join(save_dir, f"node_{idx}_if_lof_timeseries.png")
+        plt.savefig(out_path, dpi=150)
+        plt.close()
+        print(f"💾 Saved: {out_path}")
+
+
+
 
 def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_path: str):
     """
@@ -505,6 +558,15 @@ def main():
     common_top = set(res["top_mu_if_idx"]) & set(res["top_mu_lof_idx"])
     print(f"✅ Common top anomalies between IF and LOF: {len(common_top)} nodes")
     print(f"Common indices: {sorted(list(common_top))}")
+
+    common_top_list = [int(i) for i in common_top]
+    if common_top_list:
+        plot_if_lof_timeseries_for_nodes(
+        AS_if=res["AS_if"],
+        AS_lof=res["AS_lof"],
+        node_indices=common_top_list,
+        save_dir="plots/common_if_lof_timeseries"
+    )
 
     # 7) Plots (all consistent, non-negative scale)
     plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
