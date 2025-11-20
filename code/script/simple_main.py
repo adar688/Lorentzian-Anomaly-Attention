@@ -510,11 +510,11 @@ def main():
     plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
 
     # Bar charts per node
-    plot_nodes_hist_mean(res["mu_if"], method="IF", save_dir="plots")
-    plot_nodes_hist_std(res["std_if"], method="IF", save_dir="plots")
+    # plot_nodes_hist_mean(res["mu_if"], method="IF", save_dir="plots")
+    # plot_nodes_hist_std(res["std_if"], method="IF", save_dir="plots")
 
-    plot_nodes_hist_mean(res["mu_lof"], method="LOF", save_dir="plots")
-    plot_nodes_hist_std(res["std_lof"], method="LOF", save_dir="plots")
+    # plot_nodes_hist_mean(res["mu_lof"], method="LOF", save_dir="plots")
+    # plot_nodes_hist_std(res["std_lof"], method="LOF", save_dir="plots")
 
     if "AS_if" in res and res["AS_if"] is not None:
         plot_top_node_timeseries_by_method(
@@ -532,8 +532,11 @@ def main():
             save_dir="plots"
         )
     # Statistical histograms of distributions
-    plot_hist_distribution(res["mu_if"], "Distribution of Mean (μ) anomaly scores", "Mean (μ) value", "plots/hist_mean.png")
-    plot_hist_distribution(res["std_if"], "Distribution of Std (σ) anomaly scores", "Std (σ) value", "plots/hist_std.png")
+    plot_hist_distribution(res["mu_if"], "Distribution of Mean (μ) anomaly scores - IF", "Mean (μ) value", "plots/hist_mean_if.png")
+    plot_hist_distribution(res["std_if"], "Distribution of Std (σ) anomaly scores - IF", "Std (σ) value", "plots/hist_std_if.png")
+
+    plot_hist_distribution(res["mu_lof"], "Distribution of Mean (μ) anomaly scores - LOF", "Mean (μ) value", "plots/hist_mean_lof.png")
+    plot_hist_distribution(res["std_lof"], "Distribution of Std (σ) anomaly scores - LOF", "Std (σ) value", "plots/hist_std_lof.png")
 
 
 if __name__ == "__main__":
