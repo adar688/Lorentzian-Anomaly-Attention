@@ -194,55 +194,55 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
 # ======================
 #        PLOTS
 # ======================
-def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="plots"):
-    """
-    Scatter plots of anomaly stats (mean/std) per node for IF and LOF.
-    """
-    os.makedirs(save_dir, exist_ok=True)
+# def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="plots"):
+#     """
+#     Scatter plots of anomaly stats (mean/std) per node for IF and LOF.
+#     """
+#     os.makedirs(save_dir, exist_ok=True)
 
-    N = len(mu_if)
-    x = np.arange(N)
+#     N = len(mu_if)
+#     x = np.arange(N)
 
-    # Mean per node
-    plt.figure(figsize=(12, 6))
-    plt.scatter(x, mu_if, s=8, color='blue', alpha=0.6, label='IF mean (μ)')
-    plt.scatter(x, mu_lof, s=8, color='orange', alpha=0.6, label='LOF mean (μ)')
-    plt.xlabel("Node ID (i)")
-    plt.ylabel("Mean anomaly score")
-    plt.title("Mean (μ) anomaly scores per node (IF vs LOF)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "anomaly_mean_scores.png"))
-    plt.close()
-    print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_mean_scores.png')}")
+#     # Mean per node
+#     plt.figure(figsize=(12, 6))
+#     plt.scatter(x, mu_if, s=8, color='blue', alpha=0.6, label='IF mean (μ)')
+#     plt.scatter(x, mu_lof, s=8, color='orange', alpha=0.6, label='LOF mean (μ)')
+#     plt.xlabel("Node ID (i)")
+#     plt.ylabel("Mean anomaly score")
+#     plt.title("Mean (μ) anomaly scores per node (IF vs LOF)")
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.savefig(os.path.join(save_dir, "anomaly_mean_scores.png"))
+#     plt.close()
+#     print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_mean_scores.png')}")
 
-    # Std per node
-    plt.figure(figsize=(12, 6))
-    plt.scatter(x, std_if, s=8, color='green', alpha=0.6, label='IF std (σ)')
-    plt.scatter(x, std_lof, s=8, color='red', alpha=0.6, label='LOF std (σ)')
-    plt.xlabel("Node ID (i)")
-    plt.ylabel("Standard deviation of anomaly score")
-    plt.title("Standard deviation (σ) of anomaly scores per node (IF vs LOF)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "anomaly_std_scores.png"))
-    plt.close()
-    print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_std_scores.png')}")
+#     # Std per node
+#     plt.figure(figsize=(12, 6))
+#     plt.scatter(x, std_if, s=8, color='green', alpha=0.6, label='IF std (σ)')
+#     plt.scatter(x, std_lof, s=8, color='red', alpha=0.6, label='LOF std (σ)')
+#     plt.xlabel("Node ID (i)")
+#     plt.ylabel("Standard deviation of anomaly score")
+#     plt.title("Standard deviation (σ) of anomaly scores per node (IF vs LOF)")
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.savefig(os.path.join(save_dir, "anomaly_std_scores.png"))
+#     plt.close()
+#     print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_std_scores.png')}")
 
-    # Top-K bars (by IF mean)
-    if top_k is not None:
-        top_nodes = np.argsort(-mu_if)[:top_k]
-        plt.figure(figsize=(10, 5))
-        plt.bar(top_nodes, mu_if[top_nodes], color='steelblue', label='Top IF mean')
-        plt.bar(top_nodes, std_if[top_nodes], color='lightcoral', alpha=0.6, label='Top IF std')
-        plt.xlabel("Node ID (Top-K by IF mean)")
-        plt.ylabel("Score value")
-        plt.title(f"Top-{top_k} nodes by IF mean & std")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_dir, f"top_{top_k}_if_scores.png"))
-        plt.close()
-        print(f"💾 Saved: {os.path.join(save_dir, f'top_{top_k}_if_scores.png')}")
+#     # Top-K bars (by IF mean)
+#     if top_k is not None:
+#         top_nodes = np.argsort(-mu_if)[:top_k]
+#         plt.figure(figsize=(10, 5))
+#         plt.bar(top_nodes, mu_if[top_nodes], color='steelblue', label='Top IF mean')
+#         plt.bar(top_nodes, std_if[top_nodes], color='lightcoral', alpha=0.6, label='Top IF std')
+#         plt.xlabel("Node ID (Top-K by IF mean)")
+#         plt.ylabel("Score value")
+#         plt.title(f"Top-{top_k} nodes by IF mean & std")
+#         plt.legend()
+#         plt.tight_layout()
+#         plt.savefig(os.path.join(save_dir, f"top_{top_k}_if_scores.png"))
+#         plt.close()
+#         print(f"💾 Saved: {os.path.join(save_dir, f'top_{top_k}_if_scores.png')}")
 
 
 def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: str = "plots"):
@@ -507,19 +507,14 @@ def main():
     print(f"Common indices: {sorted(list(common_top))}")
 
     # 7) Plots (all consistent, non-negative scale)
-    plot_anomaly_scores(
-        mu_if=res["mu_if"],
-        std_if=res["std_if"],
-        mu_lof=res["mu_lof"],
-        std_lof=res["std_lof"],
-        top_k=20,
-        save_dir="plots"
-    )
     plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
 
     # Bar charts per node
     plot_nodes_hist_mean(res["mu_if"], method="IF", save_dir="plots")
     plot_nodes_hist_std(res["std_if"], method="IF", save_dir="plots")
+
+    plot_nodes_hist_mean(res["mu_lof"], method="LOF", save_dir="plots")
+    plot_nodes_hist_std(res["std_lof"], method="LOF", save_dir="plots")
 
     if "AS_if" in res and res["AS_if"] is not None:
         plot_top_node_timeseries_by_method(
