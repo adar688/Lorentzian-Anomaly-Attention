@@ -8,6 +8,7 @@ MAIN (consistent anomaly plotting):
 4) Short CE training on idx_train (no validation)
 5) Compute IF/LOF anomaly scores over time, canonicalize to a non-negative scale,
    and generate multiple consistent plots (bars, scatter, histograms, time series)
+6) Validation via noise injection (fake nodes) to estimate TPR/FPR under global noise
 """
 
 import os
@@ -70,6 +71,11 @@ def parse_args():
     # --- Device ---
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
+    # --- Noise validation ---
+    p.add_argument("--noise_val_iters", type=int, default=5)
+    p.add_argument("--noise_val_k_percent", type=float, default=5.0)
+    p.add_argument("--noise_val_threshold", type=float, default=0.95)
+
     return p.parse_args()
 
 
@@ -116,7 +122,7 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
     A = att.detach().cpu().numpy()  # [N, T, C]
     N, T, C = A.shape
 
-    AS_if  = np.full((N, T), np.nan, dtype=np.float32)
+    AS_if = np.full((N, T), np.nan, dtype=np.float32)
     AS_lof = np.full((N, T), np.nan, dtype=np.float32)
 
     lof_k = max(2, min(lof_k, N - 1))
@@ -139,7 +145,7 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
                 n_estimators=100,
                 contamination=contamination,
                 random_state=42,
-                n_jobs=-1
+                n_jobs=-1,
             ).fit(X_t)
             AS_if[:, t] = -if_clf.decision_function(X_t)
         except Exception:
@@ -151,7 +157,7 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
                 n_neighbors=lof_k,
                 contamination=contamination,
                 novelty=False,
-                n_jobs=-1
+                n_jobs=-1,
             )
             _ = lof.fit_predict(X_t)
             AS_lof[:, t] = -(lof.negative_outlier_factor_)
@@ -159,18 +165,17 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
             pass
 
     # Canonicalize both methods to non-negative scale (global min -> 0)
-    AS_if  = _normalize_minmax(AS_if)
+    AS_if = _normalize_minmax(AS_if)
     AS_lof = _normalize_minmax(AS_lof)
-
 
     _debug_stats("AS_if (canon)", AS_if)
     _debug_stats("AS_lof (canon)", AS_lof)
 
     # Per-node summaries on the canonized matrices
-    mu_if   = np.nanmean(AS_if,  axis=1)
-    std_if  = np.nanstd(AS_if,   axis=1)
-    mu_lof  = np.nanmean(AS_lof, axis=1)
-    std_lof = np.nanstd(AS_lof,  axis=1)
+    mu_if = np.nanmean(AS_if, axis=1)
+    std_if = np.nanstd(AS_if, axis=1)
+    mu_lof = np.nanmean(AS_lof, axis=1)
+    std_lof = np.nanstd(AS_lof, axis=1)
 
     def topk_idx(v, k):
         v = np.nan_to_num(v, nan=-1e30)
@@ -178,13 +183,13 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
         return np.argsort(-v)[:k]
 
     return {
-        "mu_if":   mu_if,
-        "std_if":  std_if,
-        "mu_lof":  mu_lof,
+        "mu_if": mu_if,
+        "std_if": std_if,
+        "mu_lof": mu_lof,
         "std_lof": std_lof,
-        "top_mu_if_idx":   topk_idx(mu_if,  topk),
-        "top_std_if_idx":  topk_idx(std_if, topk),
-        "top_mu_lof_idx":  topk_idx(mu_lof, topk),
+        "top_mu_if_idx": topk_idx(mu_if, topk),
+        "top_std_if_idx": topk_idx(std_if, topk),
+        "top_mu_lof_idx": topk_idx(mu_lof, topk),
         "top_std_lof_idx": topk_idx(std_lof, topk),
         "AS_if": AS_if,
         "AS_lof": AS_lof,
@@ -194,57 +199,6 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
 # ======================
 #        PLOTS
 # ======================
-# def plot_anomaly_scores(mu_if, std_if, mu_lof, std_lof, top_k=None, save_dir="plots"):
-#     """
-#     Scatter plots of anomaly stats (mean/std) per node for IF and LOF.
-#     """
-#     os.makedirs(save_dir, exist_ok=True)
-
-#     N = len(mu_if)
-#     x = np.arange(N)
-
-#     # Mean per node
-#     plt.figure(figsize=(12, 6))
-#     plt.scatter(x, mu_if, s=8, color='blue', alpha=0.6, label='IF mean (μ)')
-#     plt.scatter(x, mu_lof, s=8, color='orange', alpha=0.6, label='LOF mean (μ)')
-#     plt.xlabel("Node ID (i)")
-#     plt.ylabel("Mean anomaly score")
-#     plt.title("Mean (μ) anomaly scores per node (IF vs LOF)")
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.savefig(os.path.join(save_dir, "anomaly_mean_scores.png"))
-#     plt.close()
-#     print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_mean_scores.png')}")
-
-#     # Std per node
-#     plt.figure(figsize=(12, 6))
-#     plt.scatter(x, std_if, s=8, color='green', alpha=0.6, label='IF std (σ)')
-#     plt.scatter(x, std_lof, s=8, color='red', alpha=0.6, label='LOF std (σ)')
-#     plt.xlabel("Node ID (i)")
-#     plt.ylabel("Standard deviation of anomaly score")
-#     plt.title("Standard deviation (σ) of anomaly scores per node (IF vs LOF)")
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.savefig(os.path.join(save_dir, "anomaly_std_scores.png"))
-#     plt.close()
-#     print(f"💾 Saved: {os.path.join(save_dir, 'anomaly_std_scores.png')}")
-
-#     # Top-K bars (by IF mean)
-#     if top_k is not None:
-#         top_nodes = np.argsort(-mu_if)[:top_k]
-#         plt.figure(figsize=(10, 5))
-#         plt.bar(top_nodes, mu_if[top_nodes], color='steelblue', label='Top IF mean')
-#         plt.bar(top_nodes, std_if[top_nodes], color='lightcoral', alpha=0.6, label='Top IF std')
-#         plt.xlabel("Node ID (Top-K by IF mean)")
-#         plt.ylabel("Score value")
-#         plt.title(f"Top-{top_k} nodes by IF mean & std")
-#         plt.legend()
-#         plt.tight_layout()
-#         plt.savefig(os.path.join(save_dir, f"top_{top_k}_if_scores.png"))
-#         plt.close()
-#         print(f"💾 Saved: {os.path.join(save_dir, f'top_{top_k}_if_scores.png')}")
-
-
 def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: str = "plots"):
     """
     Two separate bar charts:
@@ -256,8 +210,18 @@ def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: st
     N = len(mu)
     x = np.arange(N)
 
-    mu = np.nan_to_num(mu, nan=0.0, posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0, neginf=0.0)
-    std = np.nan_to_num(std, nan=0.0, posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0, neginf=0.0)
+    mu = np.nan_to_num(
+        mu,
+        nan=0.0,
+        posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0,
+        neginf=0.0,
+    )
+    std = np.nan_to_num(
+        std,
+        nan=0.0,
+        posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0,
+        neginf=0.0,
+    )
 
     # Mean
     plt.figure(figsize=(12, 6))
@@ -298,7 +262,12 @@ def plot_nodes_hist_mean(mu: np.ndarray, method: str = "IF", save_dir: str = "pl
     N = len(mu)
     x = np.arange(N)
 
-    mu = np.nan_to_num(mu, nan=0.0, posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0, neginf=0.0)
+    mu = np.nan_to_num(
+        mu,
+        nan=0.0,
+        posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0,
+        neginf=0.0,
+    )
 
     plt.figure(figsize=(14, 6))
     plt.bar(x, mu, alpha=0.8)
@@ -320,7 +289,12 @@ def plot_nodes_hist_std(std: np.ndarray, method: str = "IF", save_dir: str = "pl
     N = len(std)
     x = np.arange(N)
 
-    std = np.nan_to_num(std, nan=0.0, posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0, neginf=0.0)
+    std = np.nan_to_num(
+        std,
+        nan=0.0,
+        posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0,
+        neginf=0.0,
+    )
 
     plt.figure(figsize=(14, 6))
     plt.bar(x, std, alpha=0.8)
@@ -338,7 +312,7 @@ def plot_top_node_timeseries_by_method(
     AS: np.ndarray,
     mu: np.ndarray,
     method_name: str,
-    save_dir: str = "plots"
+    save_dir: str = "plots",
 ) -> int:
     """
     Plot time-series for the most anomalous node according to the given method.
@@ -376,7 +350,7 @@ def plot_if_lof_timeseries_for_nodes(
     AS_if: np.ndarray,
     AS_lof: np.ndarray,
     node_indices,
-    save_dir: str = "plots/common_if_lof_timeseries"
+    save_dir: str = "plots/common_if_lof_timeseries",
 ):
     """
     For each node in node_indices, plot a time-series with two lines:
@@ -424,8 +398,6 @@ def plot_if_lof_timeseries_for_nodes(
         print(f"💾 Saved: {out_path}")
 
 
-
-
 def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_path: str):
     """
     Statistical histogram of anomaly values across nodes.
@@ -441,6 +413,151 @@ def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_pat
     plt.savefig(save_path, dpi=150)
     plt.close()
     print(f"💾 Saved: {save_path}")
+
+
+# ===========================
+#   NOISE INJECTION VALIDATION
+# ===========================
+def _create_fake_nodes_from_att(att_base: torch.Tensor, num_fake: int, noise_scale: float = 2.0) -> torch.Tensor:
+    """
+    Create fake nodes by perturbing existing temporal embeddings with strong noise.
+    att_base: [N_real, T, C]
+    Returns: [num_fake, T, C]
+    """
+    if att_base.dim() == 2:
+        att_base = att_base.unsqueeze(1)
+
+    N_real, T, C = att_base.shape
+    device = att_base.device
+
+    # Global feature-wise std across all nodes and times, used to scale the noise
+    flat = att_base.reshape(-1, C)
+    feat_std = flat.std(dim=0, keepdim=True)  # [1, C]
+    feat_std = torch.where(feat_std == 0, torch.full_like(feat_std, 1e-6), feat_std)
+
+    fake_list = []
+    for _ in range(num_fake):
+        # Sample a base node to copy temporal pattern from
+        base_idx = torch.randint(0, N_real, (1,), device=device).item()
+        base_seq = att_base[base_idx].clone()  # [T, C]
+
+        # Add strong Gaussian noise to make it anomalous
+        noise = torch.randn_like(base_seq) * (noise_scale * feat_std)
+        fake_seq = base_seq + noise
+        fake_list.append(fake_seq)
+
+    return torch.stack(fake_list, dim=0)  # [num_fake, T, C]
+
+
+def noise_injection_validation(
+    att_base: torch.Tensor,
+    num_iterations: int = 5,
+    k_percent: float = 5.0,
+    contamination: float = 0.05,
+    lof_k: int = 30,
+    threshold: float = 0.95,
+):
+    """
+    Validation via noise injection with fake nodes (Algorithm 4 style).
+
+    att_base: [N_real, T, C] temporal embeddings of real nodes.
+    num_iterations: N (number of validation iterations).
+    k_percent: percentage of fake nodes relative to real nodes per iteration.
+    contamination, lof_k: parameters for IF/LOF (passed to run_if_lof_over_time).
+    threshold: anomaly-score threshold in [0,1] after normalization.
+    """
+    if att_base.dim() == 2:
+        att_base = att_base.unsqueeze(1)
+
+    N_real = att_base.shape[0]
+    if N_real == 0:
+        print("[Noise Validation] No real nodes, skipping.")
+        return None
+
+    num_fake_per_iter = max(1, int(round(k_percent / 100.0 * N_real)))
+
+    tpr_if_list, fpr_if_list = [], []
+    tpr_lof_list, fpr_lof_list = [], []
+
+    print(
+        f"\n===== Noise Injection Validation =====\n"
+        f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
+        f"iterations: {num_iterations}, threshold: {threshold}\n"
+    )
+
+    for it in range(num_iterations):
+        print(f"[Noise Validation] Iteration {it + 1}/{num_iterations}...")
+
+        # Create fake nodes in embedding space
+        fake_nodes = _create_fake_nodes_from_att(att_base, num_fake=num_fake_per_iter, noise_scale=2.0)
+        # Augment real + fake
+        att_aug = torch.cat([att_base, fake_nodes], dim=0)  # [N_real + num_fake_per_iter, T, C]
+
+        # Run anomaly detection on the augmented set
+        res_aug = run_if_lof_over_time(att_aug, contamination=contamination, lof_k=lof_k, topk=0)
+
+        # IF
+        AS_if = res_aug.get("AS_if", None)
+        if AS_if is not None:
+            max_if = np.nanmax(AS_if, axis=1)  # max over time per node
+            flags_if = max_if >= threshold
+
+            flags_real_if = flags_if[:N_real]
+            flags_fake_if = flags_if[N_real:]
+
+            num_real_flagged_if = int(flags_real_if.sum())
+            num_fake_flagged_if = int(flags_fake_if.sum())
+
+            tpr_if = num_fake_flagged_if / float(len(flags_fake_if)) if len(flags_fake_if) > 0 else 0.0
+            fpr_if = num_real_flagged_if / float(N_real) if N_real > 0 else 0.0
+
+            tpr_if_list.append(tpr_if)
+            fpr_if_list.append(fpr_if)
+
+            print(f"  [IF] TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
+                  f"(fake flagged: {num_fake_flagged_if}/{len(flags_fake_if)}, real flagged: {num_real_flagged_if}/{N_real})")
+
+        # LOF
+        AS_lof = res_aug.get("AS_lof", None)
+        if AS_lof is not None:
+            max_lof = np.nanmax(AS_lof, axis=1)
+            flags_lof = max_lof >= threshold
+
+            flags_real_lof = flags_lof[:N_real]
+            flags_fake_lof = flags_lof[N_real:]
+
+            num_real_flagged_lof = int(flags_real_lof.sum())
+            num_fake_flagged_lof = int(flags_fake_lof.sum())
+
+            tpr_lof = num_fake_flagged_lof / float(len(flags_fake_lof)) if len(flags_fake_lof) > 0 else 0.0
+            fpr_lof = num_real_flagged_lof / float(N_real) if N_real > 0 else 0.0
+
+            tpr_lof_list.append(tpr_lof)
+            fpr_lof_list.append(fpr_lof)
+
+            print(f"  [LOF] TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
+                  f"(fake flagged: {num_fake_flagged_lof}/{len(flags_fake_lof)}, real flagged: {num_real_flagged_lof}/{N_real})")
+
+    def _summary(vals):
+        vals = np.asarray(vals, dtype=float)
+        if vals.size == 0:
+            return "n/a"
+        return f"{vals.mean():.3f} ± {vals.std():.3f}"
+
+    print("\n===== Noise Injection Validation Summary =====")
+    print(f"IF : TPR={_summary(tpr_if_list)}, FPR={_summary(fpr_if_list)}")
+    print(f"LOF: TPR={_summary(tpr_lof_list)}, FPR={_summary(fpr_lof_list)}")
+    print("=============================================\n")
+
+    return {
+        "tpr_if": tpr_if_list,
+        "fpr_if": fpr_if_list,
+        "tpr_lof": tpr_lof_list,
+        "fpr_lof": fpr_lof_list,
+        "num_fake_per_iter": num_fake_per_iter,
+        "k_percent": k_percent,
+        "threshold": threshold,
+    }
 
 
 # ===============
@@ -474,14 +591,14 @@ def main():
     )  # torch.Tensor [N, T, F]
     print(f"✅ embedding_matrix shape: {tuple(embedding_matrix.shape)}")
 
-    args.nfeat = int(embedding_matrix.shape[-1])     # F
+    args.nfeat = int(embedding_matrix.shape[-1])  # F
     args.num_nodes = int(embedding_matrix.shape[0])  # N
 
     # 2) Load graph/labels + splits
     adj, features_sp, labels_np, idx_train, idx_val, idx_test = load_citation_data(
         dataset_str="dblpv13",
         use_feats=True,
-        data_path=args.data_root
+        data_path=args.data_root,
     )
     edge_index, _ = from_scipy_sparse_matrix(adj)
     edge_index = edge_index.to(device)
@@ -497,13 +614,18 @@ def main():
 
     optimizer = torch.optim.Adam(
         list(model.parameters()) + list(cls_head.parameters()),
-        lr=args.lr, weight_decay=args.weight_decay
+        lr=args.lr,
+        weight_decay=args.weight_decay,
     )
 
-    print(f"🔧 Dynhat ready (nhid={args.nhid}, temporal_heads={args.temporal_attention_layer_heads}, classes={args.num_classes})")
+    print(
+        f"🔧 Dynhat ready (nhid={args.nhid}, temporal_heads={args.temporal_attention_layer_heads}, "
+        f"classes={args.num_classes})"
+    )
 
     # 4) Training (no validation)
-    model.train(); cls_head.train()
+    model.train()
+    cls_head.train()
     for epoch in range(args.max_epoch):
         optimizer.zero_grad()
 
@@ -511,16 +633,16 @@ def main():
         for t in range(T_bins):
             x_t = embedding_matrix[:, t, :].to(device)  # [N, F]
             x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
-            h_t = model(edge_index, x=x_t)              # [N, C=nhid+1]
+            h_t = model(edge_index, x=x_t)  # [N, C=nhid+1]
             temporal_outputs.append(h_t)
 
-        X = torch.stack(temporal_outputs, dim=1)        # [N, T, C]
-        att = model.seq_model(X)                        # [N, T, C] or [N, C]
+        X = torch.stack(temporal_outputs, dim=1)  # [N, T, C]
+        att = model.seq_model(X)  # [N, T, C] or [N, C]
         if att.ndim == 2:
-            att = att.unsqueeze(1)                      # [N, 1, C]
+            att = att.unsqueeze(1)  # [N, 1, C]
 
-        feat_last = att[:, -1, :]                       # [N, C]
-        logits = cls_head(feat_last)                    # [N, num_classes]
+        feat_last = att[:, -1, :]  # [N, C]
+        logits = cls_head(feat_last)  # [N, num_classes]
         loss = F.cross_entropy(logits[idx_train], labels[idx_train])
         loss.backward()
         optimizer.step()
@@ -528,7 +650,8 @@ def main():
         print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
 
     # 5) Final representations (optional)
-    model.eval(); cls_head.eval()
+    model.eval()
+    cls_head.eval()
     with torch.no_grad():
         outs = []
         for t in range(T_bins):
@@ -536,21 +659,23 @@ def main():
             x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
             h_t = model(edge_index, x=x_t)
             outs.append(h_t)
-        X_eval = torch.stack(outs, dim=1)     # [N, T, C]
-        att_out = model.seq_model(X_eval)     # [N, T, C] or [N, C]
+        X_eval = torch.stack(outs, dim=1)  # [N, T, C]
+        att_out = model.seq_model(X_eval)  # [N, T, C] or [N, C]
         if att_out.ndim == 2:
             att_out = att_out.unsqueeze(1)
 
-    print("✅ Done. Shapes:",
-          f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}")
+    print(
+        "✅ Done. Shapes:",
+        f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}",
+    )
     # torch.save({"att_output": att_out.cpu()}, "att_output.pt")
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=30, topk=20)
-    print("Top-20 IF(mean):",   res["top_mu_if_idx"])
-    print("Top-20 IF(std):",    res["top_std_if_idx"])
-    print("Top-20 LOF(mean):",  res["top_mu_lof_idx"])
-    print("Top-20 LOF(std):",   res["top_std_lof_idx"])
+    print("Top-20 IF(mean):", res["top_mu_if_idx"])
+    print("Top-20 IF(std):", res["top_std_if_idx"])
+    print("Top-20 LOF(mean):", res["top_mu_lof_idx"])
+    print("Top-20 LOF(std):", res["top_std_lof_idx"])
 
     print("Min std_if:", np.min(res["std_if"]))
     print("Min std_lof:", np.min(res["std_lof"]))
@@ -562,28 +687,21 @@ def main():
     common_top_list = [int(i) for i in common_top]
     if common_top_list:
         plot_if_lof_timeseries_for_nodes(
-        AS_if=res["AS_if"],
-        AS_lof=res["AS_lof"],
-        node_indices=common_top_list,
-        save_dir="plots/common_if_lof_timeseries"
-    )
+            AS_if=res["AS_if"],
+            AS_lof=res["AS_lof"],
+            node_indices=common_top_list,
+            save_dir="plots/common_if_lof_timeseries",
+        )
 
     # 7) Plots (all consistent, non-negative scale)
     plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
-
-    # Bar charts per node
-    # plot_nodes_hist_mean(res["mu_if"], method="IF", save_dir="plots")
-    # plot_nodes_hist_std(res["std_if"], method="IF", save_dir="plots")
-
-    # plot_nodes_hist_mean(res["mu_lof"], method="LOF", save_dir="plots")
-    # plot_nodes_hist_std(res["std_lof"], method="LOF", save_dir="plots")
 
     if "AS_if" in res and res["AS_if"] is not None:
         plot_top_node_timeseries_by_method(
             AS=res["AS_if"],
             mu=res["mu_if"],
             method_name="IF",
-            save_dir="plots"
+            save_dir="plots",
         )
 
     if "AS_lof" in res and res["AS_lof"] is not None:
@@ -591,14 +709,45 @@ def main():
             AS=res["AS_lof"],
             mu=res["mu_lof"],
             method_name="LOF",
-            save_dir="plots"
+            save_dir="plots",
         )
-    # Statistical histograms of distributions
-    plot_hist_distribution(res["mu_if"], "Distribution of Mean (μ) anomaly scores - IF", "Mean (μ) value", "plots/hist_mean_if.png")
-    plot_hist_distribution(res["std_if"], "Distribution of Std (σ) anomaly scores - IF", "Std (σ) value", "plots/hist_std_if.png")
 
-    plot_hist_distribution(res["mu_lof"], "Distribution of Mean (μ) anomaly scores - LOF", "Mean (μ) value", "plots/hist_mean_lof.png")
-    plot_hist_distribution(res["std_lof"], "Distribution of Std (σ) anomaly scores - LOF", "Std (σ) value", "plots/hist_std_lof.png")
+    # Statistical histograms of distributions
+    plot_hist_distribution(
+        res["mu_if"],
+        "Distribution of Mean (μ) anomaly scores - IF",
+        "Mean (μ) value",
+        "plots/hist_mean_if.png",
+    )
+    plot_hist_distribution(
+        res["std_if"],
+        "Distribution of Std (σ) anomaly scores - IF",
+        "Std (σ) value",
+        "plots/hist_std_if.png",
+    )
+
+    plot_hist_distribution(
+        res["mu_lof"],
+        "Distribution of Mean (μ) anomaly scores - LOF",
+        "Mean (μ) value",
+        "plots/hist_mean_lof.png",
+    )
+    plot_hist_distribution(
+        res["std_lof"],
+        "Distribution of Std (σ) anomaly scores - LOF",
+        "Std (σ) value",
+        "plots/hist_std_lof.png",
+    )
+
+    # 8) Noise-injection validation (fake nodes → TPR/FPR)
+    _ = noise_injection_validation(
+        att_base=att_out,
+        num_iterations=args.noise_val_iters,
+        k_percent=args.noise_val_k_percent,
+        contamination=0.05,
+        lof_k=30,
+        threshold=args.noise_val_threshold,
+    )
 
 
 if __name__ == "__main__":
