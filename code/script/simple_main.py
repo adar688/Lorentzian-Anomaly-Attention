@@ -447,6 +447,7 @@ def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_pat
 #      MAIN
 # ===============
 def main():
+    print("hello")
     args = parse_args()
 
     args.fix_curvature = True  # required so Dynhat creates self.c
