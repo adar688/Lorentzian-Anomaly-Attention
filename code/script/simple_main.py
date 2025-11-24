@@ -74,6 +74,7 @@ def parse_args():
     # --- Noise validation (Stage 4) ---
     p.add_argument("--noise_val_iters", type=int, default=5)
     p.add_argument("--noise_val_k_percent", type=float, default=5.0)
+    # If >0: use as fixed threshold in [0,1]; if <=0: use adaptive quantile threshold
     p.add_argument("--noise_val_threshold", type=float, default=0.95)
 
     return p.parse_args()
@@ -481,6 +482,16 @@ def _extend_edge_index_with_fake_nodes(
     return torch.stack([new_row, new_col], dim=0)
 
 
+def _compute_quantile_threshold(max_scores: np.ndarray, target_frac: float) -> float:
+    """
+    Compute an adaptive threshold so that roughly target_frac of nodes are flagged.
+    """
+    max_scores = np.nan_to_num(max_scores, nan=0.0)
+    target_frac = float(np.clip(target_frac, 1e-4, 0.5))
+    q = 1.0 - target_frac
+    return float(np.quantile(max_scores, q))
+
+
 def noise_injection_validation_full_pipeline(
     embedding_matrix: torch.Tensor,
     edge_index: torch.Tensor,
@@ -489,8 +500,9 @@ def noise_injection_validation_full_pipeline(
     k_percent: float = 5.0,
     contamination: float = 0.05,
     lof_k: int = 30,
-    threshold: float = 0.95,
+    threshold: float | None = None,
     norm_scale: float = 0.1,
+    target_frac_for_threshold: float = 0.05,
 ):
     """
     Full-pipeline noise injection validation (Algorithm 4 style).
@@ -501,8 +513,12 @@ def noise_injection_validation_full_pipeline(
     num_iterations: N (number of validation iterations).
     k_percent: percentage of fake nodes relative to real nodes per iteration.
     contamination, lof_k: parameters for IF/LOF (Stage 3).
-    threshold: anomaly-score threshold in [0,1] after normalization.
+    threshold:
+        - If not None: use as fixed threshold in [0,1].
+        - If None: compute an adaptive threshold by quantile so that
+          ~target_frac_for_threshold of nodes are flagged.
     norm_scale: scaling used for input normalization before Dynhat.
+    target_frac_for_threshold: fraction of nodes to flag in adaptive mode.
     """
     if embedding_matrix.dim() != 3:
         raise ValueError("embedding_matrix must be [N, T, F]")
@@ -524,7 +540,8 @@ def noise_injection_validation_full_pipeline(
     print(
         f"\n===== Noise Injection Validation (full pipeline) =====\n"
         f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
-        f"iterations: {num_iterations}, threshold: {threshold}\n"
+        f"iterations: {num_iterations}, "
+        f"{'fixed threshold=' + str(threshold) if threshold is not None else 'adaptive quantile threshold'}\n"
     )
 
     for it in range(num_iterations):
@@ -572,11 +589,19 @@ def noise_injection_validation_full_pipeline(
         )
 
         # 5) Labels: fake indices are [N_real .. N_all-1]
-        # IF
+        # ---------- IF ----------
         AS_if = res_aug.get("AS_if", None)
         if AS_if is not None:
             max_if = np.nanmax(AS_if, axis=1)  # [N_all]
-            flags_if = max_if >= threshold
+
+            if threshold is not None:
+                thr_if = threshold
+            else:
+                thr_if = _compute_quantile_threshold(
+                    max_if, target_frac=target_frac_for_threshold
+                )
+
+            flags_if = max_if >= thr_if
 
             flags_real_if = flags_if[:N_real]
             flags_fake_if = flags_if[N_real:]
@@ -591,16 +616,24 @@ def noise_injection_validation_full_pipeline(
             fpr_if_list.append(fpr_if)
 
             print(
-                f"  [IF] TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
+                f"  [IF] thr={thr_if:.4f} | TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
                 f"(fake flagged: {num_fake_flagged_if}/{len(flags_fake_if)}, "
                 f"real flagged: {num_real_flagged_if}/{N_real})"
             )
 
-        # LOF
+        # ---------- LOF ----------
         AS_lof = res_aug.get("AS_lof", None)
         if AS_lof is not None:
             max_lof = np.nanmax(AS_lof, axis=1)  # [N_all]
-            flags_lof = max_lof >= threshold
+
+            if threshold is not None:
+                thr_lof = threshold
+            else:
+                thr_lof = _compute_quantile_threshold(
+                    max_lof, target_frac=target_frac_for_threshold
+                )
+
+            flags_lof = max_lof >= thr_lof
 
             flags_real_lof = flags_lof[:N_real]
             flags_fake_lof = flags_lof[N_real:]
@@ -615,7 +648,7 @@ def noise_injection_validation_full_pipeline(
             fpr_lof_list.append(fpr_lof)
 
             print(
-                f"  [LOF] TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
+                f"  [LOF] thr={thr_lof:.4f} | TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
                 f"(fake flagged: {num_fake_flagged_lof}/{len(flags_fake_lof)}, "
                 f"real flagged: {num_real_flagged_lof}/{N_real})"
             )
@@ -639,6 +672,7 @@ def noise_injection_validation_full_pipeline(
         "num_fake_per_iter": num_fake_per_iter,
         "k_percent": k_percent,
         "threshold": threshold,
+        "target_frac_for_threshold": target_frac_for_threshold,
     }
 
 
@@ -820,6 +854,10 @@ def main():
         "plots/hist_std_lof.png",
     )
 
+    # Decide threshold mode for validation:
+    # If user gave a positive threshold -> fixed; otherwise -> adaptive quantile.
+    fixed_threshold = args.noise_val_threshold if args.noise_val_threshold > 0 else None
+
     # 8) Noise-injection validation (fake nodes → TPR/FPR) – full pipeline (Algorithm 4)
     _ = noise_injection_validation_full_pipeline(
         embedding_matrix=embedding_matrix,   # [N, T, F] from dynamic Node2Vec
@@ -829,8 +867,9 @@ def main():
         k_percent=args.noise_val_k_percent,
         contamination=0.05,
         lof_k=30,
-        threshold=args.noise_val_threshold,
+        threshold=fixed_threshold,
         norm_scale=args.norm_scale,
+        target_frac_for_threshold=0.05,     # ~5% מהנודים יסומנו במצב אדפטיבי
     )
 
 
