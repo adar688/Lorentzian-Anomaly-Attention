@@ -1,29 +1,29 @@
 # -*- coding: utf-8 -*-
 
 """
-MAIN (consistent anomaly plotting):
+MAIN (consistent anomaly plotting + noise-injection validation):
 1) Load snapshots
 2) Build dynamic Node2Vec embeddings [N, T, F]
 3) Run Dynhat with temporal attention
 4) Short CE training on idx_train (no validation)
 5) Compute IF/LOF anomaly scores over time, canonicalize to a non-negative scale,
    and generate multiple consistent plots (bars, scatter, histograms, time series)
-6) Validation via noise injection (fake nodes) to estimate TPR/FPR under global noise
+6) Validation via noise injection (fake nodes) with full pipeline (Node2Vec embeddings -> Dynhat -> Attention -> IF/LOF)
 """
 
 import os
 import sys
 import argparse
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-from torch_geometric.utils import from_scipy_sparse_matrix
 import matplotlib.pyplot as plt
+from torch_geometric.utils import from_scipy_sparse_matrix
 
-# internal modules
 from models.Dynhat import Dynhat
 from script.utils.dynamic_node2vec import load_manifest_and_snapshots, build_dynamic_node2vec
 from script.utils.dataUtils import load_citation_data  # returns adj, features_sp, labels, idx_train, idx_val, idx_test
+
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
@@ -33,7 +33,7 @@ from sklearn.neighbors import LocalOutlierFactor
 #        ARGS
 # ======================
 def parse_args():
-    p = argparse.ArgumentParser(description="Simple Dynhat run with dynamic Node2Vec + temporal attention (CE only).")
+    p = argparse.ArgumentParser(description="Dynhat + dynamic Node2Vec + temporal attention + IF/LOF + noise validation.")
 
     # --- Paths ---
     p.add_argument("--data-root", type=str, default="script/data/custom_out")
@@ -71,7 +71,7 @@ def parse_args():
     # --- Device ---
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
-    # --- Noise validation ---
+    # --- Noise validation (Stage 4) ---
     p.add_argument("--noise_val_iters", type=int, default=5)
     p.add_argument("--noise_val_k_percent", type=float, default=5.0)
     p.add_argument("--noise_val_threshold", type=float, default=0.95)
@@ -416,63 +416,105 @@ def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_pat
 
 
 # ===========================
-#   NOISE INJECTION VALIDATION
+#   NOISE INJECTION VALIDATION (full pipeline)
 # ===========================
-def _create_fake_nodes_from_att(att_base: torch.Tensor, num_fake: int, noise_scale: float = 2.0) -> torch.Tensor:
+def _create_fake_embeddings_from_real(
+    embedding_matrix: torch.Tensor,
+    num_fake: int,
+    noise_scale: float = 2.0,
+) -> torch.Tensor:
     """
-    Create fake nodes by perturbing existing temporal embeddings with strong noise.
-    att_base: [N_real, T, C]
-    Returns: [num_fake, T, C]
+    Create fake dynamic embeddings by perturbing existing node trajectories.
+    embedding_matrix: [N_real, T, F]
+    Returns: [num_fake, T, F]
     """
-    if att_base.dim() == 2:
-        att_base = att_base.unsqueeze(1)
+    if embedding_matrix.dim() != 3:
+        raise ValueError("embedding_matrix must be [N, T, F]")
 
-    N_real, T, C = att_base.shape
-    device = att_base.device
+    N_real, T, F = embedding_matrix.shape
+    device = embedding_matrix.device
 
-    # Global feature-wise std across all nodes and times, used to scale the noise
-    flat = att_base.reshape(-1, C)
-    feat_std = flat.std(dim=0, keepdim=True)  # [1, C]
+    flat = embedding_matrix.reshape(-1, F)
+    feat_std = flat.std(dim=0, keepdim=True)  # [1, F]
     feat_std = torch.where(feat_std == 0, torch.full_like(feat_std, 1e-6), feat_std)
 
     fake_list = []
     for _ in range(num_fake):
-        # Sample a base node to copy temporal pattern from
         base_idx = torch.randint(0, N_real, (1,), device=device).item()
-        base_seq = att_base[base_idx].clone()  # [T, C]
-
-        # Add strong Gaussian noise to make it anomalous
-        noise = torch.randn_like(base_seq) * (noise_scale * feat_std)
+        base_seq = embedding_matrix[base_idx].clone()  # [T, F]
+        noise = torch.randn_like(base_seq) * (noise_scale * feat_std)  # broadcast over T
         fake_seq = base_seq + noise
         fake_list.append(fake_seq)
 
-    return torch.stack(fake_list, dim=0)  # [num_fake, T, C]
+    return torch.stack(fake_list, dim=0)  # [num_fake, T, F]
 
 
-def noise_injection_validation(
-    att_base: torch.Tensor,
+def _extend_edge_index_with_fake_nodes(
+    edge_index: torch.Tensor,
+    num_real: int,
+    num_fake: int,
+    avg_degree: int = 5,
+) -> torch.Tensor:
+    """
+    Extend base edge_index with edges from fake nodes to random real nodes.
+    edge_index: [2, E] (assumed undirected or treated as such)
+    Nodes 0..num_real-1 are real; new fake nodes get indices num_real..num_real+num_fake-1.
+    """
+    if edge_index.dim() != 2 or edge_index.size(0) != 2:
+        raise ValueError("edge_index must be of shape [2, E]")
+
+    device = edge_index.device
+    row_parts = [edge_index[0]]
+    col_parts = [edge_index[1]]
+
+    for i in range(num_fake):
+        fake_idx = num_real + i
+        deg = max(1, int(np.random.poisson(lam=max(avg_degree, 1))))
+        neighbors = torch.randint(0, num_real, (deg,), device=device)
+        fake_vec = torch.full((deg,), fake_idx, device=device, dtype=torch.long)
+
+        row_parts.append(torch.cat([fake_vec, neighbors]))
+        col_parts.append(torch.cat([neighbors, fake_vec]))
+
+    new_row = torch.cat(row_parts, dim=0)
+    new_col = torch.cat(col_parts, dim=0)
+    return torch.stack([new_row, new_col], dim=0)
+
+
+def noise_injection_validation_full_pipeline(
+    embedding_matrix: torch.Tensor,
+    edge_index: torch.Tensor,
+    model: torch.nn.Module,
     num_iterations: int = 5,
     k_percent: float = 5.0,
     contamination: float = 0.05,
     lof_k: int = 30,
     threshold: float = 0.95,
+    norm_scale: float = 0.1,
 ):
     """
-    Validation via noise injection with fake nodes (Algorithm 4 style).
+    Full-pipeline noise injection validation (Algorithm 4 style).
 
-    att_base: [N_real, T, C] temporal embeddings of real nodes.
+    embedding_matrix: [N_real, T, F] dynamic embeddings (Stage 1 output).
+    edge_index: [2, E] base graph edges (same for all time steps in this implementation).
+    model: trained Dynhat model (structural + temporal encoder).
     num_iterations: N (number of validation iterations).
     k_percent: percentage of fake nodes relative to real nodes per iteration.
-    contamination, lof_k: parameters for IF/LOF (passed to run_if_lof_over_time).
+    contamination, lof_k: parameters for IF/LOF (Stage 3).
     threshold: anomaly-score threshold in [0,1] after normalization.
+    norm_scale: scaling used for input normalization before Dynhat.
     """
-    if att_base.dim() == 2:
-        att_base = att_base.unsqueeze(1)
+    if embedding_matrix.dim() != 3:
+        raise ValueError("embedding_matrix must be [N, T, F]")
 
-    N_real = att_base.shape[0]
+    N_real, T, F = embedding_matrix.shape
     if N_real == 0:
         print("[Noise Validation] No real nodes, skipping.")
         return None
+
+    device = next(model.parameters()).device
+    embedding_matrix = embedding_matrix.to(device)
+    edge_index = edge_index.to(device)
 
     num_fake_per_iter = max(1, int(round(k_percent / 100.0 * N_real)))
 
@@ -480,7 +522,7 @@ def noise_injection_validation(
     tpr_lof_list, fpr_lof_list = [], []
 
     print(
-        f"\n===== Noise Injection Validation =====\n"
+        f"\n===== Noise Injection Validation (full pipeline) =====\n"
         f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
         f"iterations: {num_iterations}, threshold: {threshold}\n"
     )
@@ -488,18 +530,52 @@ def noise_injection_validation(
     for it in range(num_iterations):
         print(f"[Noise Validation] Iteration {it + 1}/{num_iterations}...")
 
-        # Create fake nodes in embedding space
-        fake_nodes = _create_fake_nodes_from_att(att_base, num_fake=num_fake_per_iter, noise_scale=2.0)
-        # Augment real + fake
-        att_aug = torch.cat([att_base, fake_nodes], dim=0)  # [N_real + num_fake_per_iter, T, C]
+        # 1) Create fake dynamic embeddings (Stage 1 analogue for fake nodes)
+        fake_emb = _create_fake_embeddings_from_real(
+            embedding_matrix=embedding_matrix,
+            num_fake=num_fake_per_iter,
+            noise_scale=2.0,
+        )  # [num_fake, T, F]
 
-        # Run anomaly detection on the augmented set
-        res_aug = run_if_lof_over_time(att_aug, contamination=contamination, lof_k=lof_k, topk=0)
+        # 2) Augment embeddings and graph structure
+        emb_aug = torch.cat([embedding_matrix, fake_emb], dim=0)  # [N_real + num_fake, T, F]
+        edge_aug = _extend_edge_index_with_fake_nodes(
+            edge_index=edge_index,
+            num_real=N_real,
+            num_fake=num_fake_per_iter,
+            avg_degree=5,
+        )  # [2, E_aug]
 
+        N_all = emb_aug.shape[0]
+
+        # 3) Full Dynhat forward (structural + temporal encoding, Stage 2)
+        model.eval()
+        with torch.no_grad():
+            outs_iter = []
+            for t_idx in range(T):
+                x_t = emb_aug[:, t_idx, :]  # [N_all, F]
+                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(norm_scale)
+                h_t = model(edge_aug, x=x_t)  # [N_all, C]
+                outs_iter.append(h_t)
+
+            X_iter = torch.stack(outs_iter, dim=1)  # [N_all, T, C]
+            att_iter = model.seq_model(X_iter)      # [N_all, T, C] or [N_all, C]
+            if att_iter.ndim == 2:
+                att_iter = att_iter.unsqueeze(1)
+
+        # 4) Anomaly detection (Stage 3) on augmented set
+        res_aug = run_if_lof_over_time(
+            att_iter,
+            contamination=contamination,
+            lof_k=lof_k,
+            topk=0,
+        )
+
+        # 5) Labels: fake indices are [N_real .. N_all-1]
         # IF
         AS_if = res_aug.get("AS_if", None)
         if AS_if is not None:
-            max_if = np.nanmax(AS_if, axis=1)  # max over time per node
+            max_if = np.nanmax(AS_if, axis=1)  # [N_all]
             flags_if = max_if >= threshold
 
             flags_real_if = flags_if[:N_real]
@@ -514,13 +590,16 @@ def noise_injection_validation(
             tpr_if_list.append(tpr_if)
             fpr_if_list.append(fpr_if)
 
-            print(f"  [IF] TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
-                  f"(fake flagged: {num_fake_flagged_if}/{len(flags_fake_if)}, real flagged: {num_real_flagged_if}/{N_real})")
+            print(
+                f"  [IF] TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
+                f"(fake flagged: {num_fake_flagged_if}/{len(flags_fake_if)}, "
+                f"real flagged: {num_real_flagged_if}/{N_real})"
+            )
 
         # LOF
         AS_lof = res_aug.get("AS_lof", None)
         if AS_lof is not None:
-            max_lof = np.nanmax(AS_lof, axis=1)
+            max_lof = np.nanmax(AS_lof, axis=1)  # [N_all]
             flags_lof = max_lof >= threshold
 
             flags_real_lof = flags_lof[:N_real]
@@ -535,8 +614,11 @@ def noise_injection_validation(
             tpr_lof_list.append(tpr_lof)
             fpr_lof_list.append(fpr_lof)
 
-            print(f"  [LOF] TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
-                  f"(fake flagged: {num_fake_flagged_lof}/{len(flags_fake_lof)}, real flagged: {num_real_flagged_lof}/{N_real})")
+            print(
+                f"  [LOF] TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
+                f"(fake flagged: {num_fake_flagged_lof}/{len(flags_fake_lof)}, "
+                f"real flagged: {num_real_flagged_lof}/{N_real})"
+            )
 
     def _summary(vals):
         vals = np.asarray(vals, dtype=float)
@@ -544,10 +626,10 @@ def noise_injection_validation(
             return "n/a"
         return f"{vals.mean():.3f} ± {vals.std():.3f}"
 
-    print("\n===== Noise Injection Validation Summary =====")
+    print("\n===== Noise Injection Validation Summary (full pipeline) =====")
     print(f"IF : TPR={_summary(tpr_if_list)}, FPR={_summary(fpr_if_list)}")
     print(f"LOF: TPR={_summary(tpr_lof_list)}, FPR={_summary(fpr_lof_list)}")
-    print("=============================================\n")
+    print("==============================================================\n")
 
     return {
         "tpr_if": tpr_if_list,
@@ -665,10 +747,9 @@ def main():
             att_out = att_out.unsqueeze(1)
 
     print(
-        "✅ Done. Shapes:",
+        "✅ Done main pipeline. Shapes:",
         f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}",
     )
-    # torch.save({"att_output": att_out.cpu()}, "att_output.pt")
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=30, topk=20)
@@ -739,14 +820,17 @@ def main():
         "plots/hist_std_lof.png",
     )
 
-    # 8) Noise-injection validation (fake nodes → TPR/FPR)
-    _ = noise_injection_validation(
-        att_base=att_out,
+    # 8) Noise-injection validation (fake nodes → TPR/FPR) – full pipeline (Algorithm 4)
+    _ = noise_injection_validation_full_pipeline(
+        embedding_matrix=embedding_matrix,   # [N, T, F] from dynamic Node2Vec
+        edge_index=edge_index,              # base graph
+        model=model,                        # trained Dynhat (Stage 2 encoder)
         num_iterations=args.noise_val_iters,
         k_percent=args.noise_val_k_percent,
         contamination=0.05,
         lof_k=30,
         threshold=args.noise_val_threshold,
+        norm_scale=args.norm_scale,
     )
 
 
