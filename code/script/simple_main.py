@@ -72,7 +72,7 @@ def parse_args():
     # --- Noise validation (Stage 4) ---
     p.add_argument("--noise_val_iters", type=int, default=5)         # כמה איטרציות N
     p.add_argument("--noise_val_k_percent", type=float, default=5.0) # כמה אחוז פייקים k%
-    p.add_argument("--noise_val_top_frac", type=float, default=0.05) # איזה חלק מהנודים נסמן כאנומליות (top X%)
+    p.add_argument("--noise_val_top_frac", type=float, default=0.02) # איזה חלק מהנודים נסמן כאנומליות (top X%)
 
 
     return p.parse_args()
@@ -244,6 +244,10 @@ def _create_fake_embeddings_from_real(
         mask[active_indices] = 1.0
 
         fake_seq = fake_seq * mask  # most of the time this node is almost "off"
+        # Add a strong temporal spike at one random time step
+        random_t = torch.randint(0, T, (1,), device=device).item()
+        jump = torch.randn(1, F, device=device) * (noise_scale_iso * 5.0)
+        fake_seq[random_t] += jump
         fake_list.append(fake_seq)
 
     # --- Spammy-style fake nodes: strong magnitude, active at many time steps ---
@@ -255,7 +259,7 @@ def _create_fake_embeddings_from_real(
         fake_seq = base_seq + noise
 
         # Amplify overall magnitude so it is clearly out-of-distribution
-        fake_seq = fake_seq * 3.0
+        fake_seq = fake_seq * 10.0
         fake_list.append(fake_seq)
 
     return torch.stack(fake_list, dim=0)  # [num_fake, T, F]
@@ -267,7 +271,7 @@ def _extend_edge_index_with_fake_nodes(
     num_real: int,
     num_fake: int,
     avg_degree_iso: int = 1,
-    avg_degree_spam: int = 40,
+    avg_degree_spam: int = 200,
 ) -> torch.Tensor:
     """
     Extend base edge_index with two types of fake nodes:
@@ -292,7 +296,7 @@ def _extend_edge_index_with_fake_nodes(
         fake_idx = num_real + i
 
         # Sometimes degree 0 (fully isolated), sometimes degree 1–avg_degree_iso
-        if torch.rand(1, device=device).item() < 0.3:
+        if torch.rand(1, device=device).item() < 0.6:
             continue  # 30% completely isolated
 
         deg = max(1, int(np.random.poisson(lam=max(avg_degree_iso, 1))))
@@ -327,7 +331,7 @@ def noise_injection_validation_full_pipeline(
     model: torch.nn.Module,
     num_iterations: int = 5,
     k_percent: float = 5.0,
-    top_frac: float = 0.05,
+    top_frac: float = 0.02,
     contamination: float = 0.05,
     lof_k: int = 30,
     norm_scale: float = 0.1,
@@ -381,7 +385,7 @@ def noise_injection_validation_full_pipeline(
             num_real=N_real,
             num_fake=num_fake_per_iter,
             avg_degree_iso=1,
-            avg_degree_spam=40,
+            avg_degree_spam=200,
         )  # [2, E_aug]
 
         N_all = emb_aug.shape[0]
