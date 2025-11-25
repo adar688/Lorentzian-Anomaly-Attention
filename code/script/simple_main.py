@@ -70,10 +70,10 @@ def parse_args():
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     # --- Noise validation (Stage 4) ---
-    p.add_argument("--noise_val_iters", type=int, default=5)
-    p.add_argument("--noise_val_k_percent", type=float, default=5.0)
-    # If >0: use as fixed threshold in [0,1]; if <=0: use adaptive quantile threshold
-    p.add_argument("--noise_val_threshold", type=float, default=0.95)
+    p.add_argument("--noise_val_iters", type=int, default=5)         # כמה איטרציות N
+    p.add_argument("--noise_val_k_percent", type=float, default=5.0) # כמה אחוז פייקים k%
+    p.add_argument("--noise_val_top_frac", type=float, default=0.05) # איזה חלק מהנודים נסמן כאנומליות (top X%)
+
 
     return p.parse_args()
 
