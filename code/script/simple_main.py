@@ -51,7 +51,7 @@ def parse_args():
     p.add_argument("--c0", type=float, default=1.0)
 
     p.add_argument("--nhid", type=int, default=64)
-    p.add_argument("--nout", type=int, default=32)
+    p.add_argument("--nout", type=int, default=64)
     p.add_argument("--heads", type=int, default=1)  # structural heads
     p.add_argument("--temporal_attention_layer_heads", type=int, default=1)
     p.add_argument("--dropout", type=float, default=0.0)
