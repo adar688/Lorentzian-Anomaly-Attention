@@ -72,7 +72,7 @@ def parse_args():
     # --- Noise validation (Stage 4) ---
     p.add_argument("--noise_val_iters", type=int, default=5)         # כמה איטרציות N
     p.add_argument("--noise_val_k_percent", type=float, default=5.0) # כמה אחוז פייקים k%
-    p.add_argument("--noise_val_top_frac", type=float, default=0.02) # איזה חלק מהנודים נסמן כאנומליות (top X%)
+    p.add_argument("--noise_val_top_frac", type=float, default=0.05) # איזה חלק מהנודים נסמן כאנומליות (top X%)
 
 
     return p.parse_args()
@@ -599,7 +599,7 @@ def main():
     )
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
-    res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=50, topk=20)
+    res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=100, topk=20)
     print("Top-20 IF(mean):", res["top_mu_if_idx"])
     print("Top-20 IF(std):", res["top_std_if_idx"])
     print("Top-20 LOF(mean):", res["top_mu_lof_idx"])
@@ -676,7 +676,7 @@ def main():
         k_percent=args.noise_val_k_percent,
         top_frac=args.noise_val_top_frac,
         contamination=0.05,
-        lof_k=50,
+        lof_k=100,
         norm_scale=args.norm_scale,
     )
 
