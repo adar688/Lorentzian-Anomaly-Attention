@@ -207,9 +207,8 @@ def _create_fake_embeddings_from_real(
 ) -> torch.Tensor:
     """
     Create a mixed set of fake dynamic embeddings:
-      - Half "isolated" style (weak, short temporal activity, low degree in the graph)
-      - Half "spammy" style (very strong magnitude, over-connected in the graph)
-
+      - Half "isolated" style (weak, short temporal activity, low/zero degree)
+      - Half "spammy" style (very strong magnitude, over-connected)
     embedding_matrix: [N_real, T, F]
     Returns: [num_fake, T, F]
     """
@@ -219,6 +218,7 @@ def _create_fake_embeddings_from_real(
     N_real, T, F = embedding_matrix.shape
     device = embedding_matrix.device
 
+    # Global feature std for scaling noise
     flat = embedding_matrix.reshape(-1, F)
     feat_std = flat.std(dim=0, keepdim=True)  # [1, F]
     feat_std = torch.where(feat_std == 0, torch.full_like(feat_std, 1e-6), feat_std)
@@ -228,7 +228,7 @@ def _create_fake_embeddings_from_real(
 
     fake_list = []
 
-    # --- Isolated-style fake nodes: short bursts in time, moderate noise ---
+    # --- Isolated-style fake nodes: short bursts in time, moderate noise + strong spike ---
     for _ in range(num_iso):
         base_idx = torch.randint(0, N_real, (1,), device=device).item()
         base_seq = embedding_matrix[base_idx].clone()  # [T, F]
@@ -238,16 +238,17 @@ def _create_fake_embeddings_from_real(
 
         # Temporal mask: only a small number of time steps are "active"
         mask = torch.zeros(T, 1, device=device)
-        # choose 1–2 random time steps to be active
         num_active = torch.randint(low=1, high=min(3, T + 1), size=(1,), device=device).item()
         active_indices = torch.randint(0, T, (num_active,), device=device)
         mask[active_indices] = 1.0
 
-        fake_seq = fake_seq * mask  # most of the time this node is almost "off"
-        # Add a strong temporal spike at one random time step
+        fake_seq = fake_seq * mask  # mostly "off" in time
+
+        # Add a strong spike at one random time step (temporal anomaly)
         random_t = torch.randint(0, T, (1,), device=device).item()
-        jump = torch.randn(1, F, device=device) * (noise_scale_iso * 5.0)
-        fake_seq[random_t] += jump
+        jump = torch.randn(1, F, device=device) * (noise_scale_iso * 5.0 * feat_std)
+        fake_seq[random_t] += jump.squeeze(0)
+
         fake_list.append(fake_seq)
 
     # --- Spammy-style fake nodes: strong magnitude, active at many time steps ---
@@ -266,6 +267,7 @@ def _create_fake_embeddings_from_real(
 
 
 
+
 def _extend_edge_index_with_fake_nodes(
     edge_index: torch.Tensor,
     num_real: int,
@@ -275,9 +277,8 @@ def _extend_edge_index_with_fake_nodes(
 ) -> torch.Tensor:
     """
     Extend base edge_index with two types of fake nodes:
-      - First half: "isolated" style (very low degree, sometimes even 0 or 1 edge)
-      - Second half: "spammy" style (high degree, many edges to random real nodes)
-
+      - First half: "isolated" style (very low or zero degree)
+      - Second half: "spammy" style (very high degree, many edges to random real nodes)
     edge_index: [2, E]
     Nodes 0..num_real-1 are real; new fake nodes get indices num_real..num_real+num_fake-1.
     """
@@ -291,29 +292,30 @@ def _extend_edge_index_with_fake_nodes(
     num_spam = num_fake // 2
     num_iso = num_fake - num_spam
 
-    # --- Isolated-style fake nodes: very low degree ---
+    # --- Isolated-style fake nodes: very low / zero degree ---
     for i in range(num_iso):
         fake_idx = num_real + i
 
-        # Sometimes degree 0 (fully isolated), sometimes degree 1–avg_degree_iso
+        # Increase chance to be fully isolated: about 60% no edges at all
         if torch.rand(1, device=device).item() < 0.6:
-            continue  # 30% completely isolated
+            continue
 
         deg = max(1, int(np.random.poisson(lam=max(avg_degree_iso, 1))))
         deg = min(deg, num_real)
         neighbors = torch.randint(0, num_real, (deg,), device=device)
         fake_vec = torch.full((deg,), fake_idx, device=device, dtype=torch.long)
 
+        # Undirected edges: fake <-> real
         row_parts.append(torch.cat([fake_vec, neighbors]))
         col_parts.append(torch.cat([neighbors, fake_vec]))
 
     # --- Spammy-style fake nodes: very high degree ---
     for j in range(num_spam):
         fake_idx = num_real + num_iso + j
-        deg = max(5, int(np.random.poisson(lam=max(avg_degree_spam, 5))))
+        deg = max(10, int(np.random.poisson(lam=max(avg_degree_spam, 10))))
         deg = min(deg, num_real)
 
-        # To reduce exact duplicates, use unique neighbors if possible
+        # Use unique neighbors where possible
         neighbors = torch.randperm(num_real, device=device)[:deg]
         fake_vec = torch.full((deg,), fake_idx, device=device, dtype=torch.long)
 
@@ -325,13 +327,14 @@ def _extend_edge_index_with_fake_nodes(
     return torch.stack([new_row, new_col], dim=0)
 
 
+
 def noise_injection_validation_full_pipeline(
     embedding_matrix: torch.Tensor,
     edge_index: torch.Tensor,
     model: torch.nn.Module,
     num_iterations: int = 5,
     k_percent: float = 5.0,
-    top_frac: float = 0.02,
+    top_frac: float = 0.05,
     contamination: float = 0.05,
     lof_k: int = 30,
     norm_scale: float = 0.1,
@@ -339,7 +342,7 @@ def noise_injection_validation_full_pipeline(
     """
     Implementation of Algorithm 4 (noise injection via fake nodes),
     using a mixed strategy:
-      - Half of the fake nodes are "isolated" (low degree, short temporal activity)
+      - Half of the fake nodes are "isolated" (low/zero degree, short temporal activity + spike)
       - Half are "spammy" (high degree, strong magnitude).
     The full pipeline is applied: embeddings -> Dynhat -> temporal attention -> IF/LOF.
     """
