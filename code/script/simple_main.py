@@ -38,10 +38,10 @@ def parse_args():
 
     # --- Node2Vec ---
     p.add_argument("--emb-dim", type=int, default=128)
-    p.add_argument("--walk-length", type=int, default=30)
-    p.add_argument("--num-walks", type=int, default=200)
+    p.add_argument("--walk-length", type=int, default=40)
+    p.add_argument("--num-walks", type=int, default=300)
     p.add_argument("--workers", type=int, default=2)
-    p.add_argument("--window", type=int, default=10)
+    p.add_argument("--window", type=int, default=8)
     p.add_argument("--t-max", type=int, default=None)
 
     # --- Dynhat-required args ---
@@ -50,7 +50,7 @@ def parse_args():
     p.add_argument("--curvature", type=float, default=1.0)
     p.add_argument("--c0", type=float, default=1.0)
 
-    p.add_argument("--nhid", type=int, default=32)
+    p.add_argument("--nhid", type=int, default=64)
     p.add_argument("--nout", type=int, default=32)
     p.add_argument("--heads", type=int, default=1)  # structural heads
     p.add_argument("--temporal_attention_layer_heads", type=int, default=1)
@@ -61,7 +61,7 @@ def parse_args():
     p.add_argument("--seq-model", dest="seq_model", type=str, default="Attention")
 
     # --- Training ---
-    p.add_argument("--max-epoch", type=int, default=10)
+    p.add_argument("--max-epoch", type=int, default=30)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=5e-4)
     p.add_argument("--norm-scale", type=float, default=0.1)
