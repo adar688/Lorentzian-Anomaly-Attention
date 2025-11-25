@@ -11,18 +11,16 @@ MAIN (consistent anomaly plotting + noise-injection validation):
 6) Validation via noise injection (fake nodes) with full pipeline (Node2Vec embeddings -> Dynhat -> Attention -> IF/LOF)
 """
 
-import os
-import sys
 import argparse
 import numpy as np
 import torch
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 from torch_geometric.utils import from_scipy_sparse_matrix
 
 from models.Dynhat import Dynhat
 from script.utils.dynamic_node2vec import load_manifest_and_snapshots, build_dynamic_node2vec
 from script.utils.dataUtils import load_citation_data  # returns adj, features_sp, labels, idx_train, idx_val, idx_test
+from script.utils.graphUtils import *
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import IsolationForest
@@ -197,232 +195,14 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
     }
 
 
-# ======================
-#        PLOTS
-# ======================
-def plot_mean_std(mu: np.ndarray, std: np.ndarray, top_k: int = 10, save_dir: str = "plots"):
-    """
-    Two separate bar charts:
-      1) Mean (μ) per node, highlighting Top-K
-      2) Std (σ) per node, highlighting Top-K
-    """
-    os.makedirs(save_dir, exist_ok=True)
-
-    N = len(mu)
-    x = np.arange(N)
-
-    mu = np.nan_to_num(
-        mu,
-        nan=0.0,
-        posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0,
-        neginf=0.0,
-    )
-    std = np.nan_to_num(
-        std,
-        nan=0.0,
-        posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0,
-        neginf=0.0,
-    )
-
-    # Mean
-    plt.figure(figsize=(12, 6))
-    plt.bar(x, mu, color='skyblue', alpha=0.7, label='Mean (μ)')
-    top_mean_idx = np.argsort(-mu)[:top_k]
-    plt.scatter(top_mean_idx, mu[top_mean_idx], color='red', s=80, label=f'Top {top_k} Mean')
-    plt.title('Isolation Forest — Mean (μ) per Node', fontsize=14)
-    plt.xlabel('Node index (i)', fontsize=12)
-    plt.ylabel('Mean anomaly score', fontsize=12)
-    plt.grid(True, alpha=0.3, linestyle='--')
-    plt.tight_layout()
-    mean_path = os.path.join(save_dir, "plot_mean.png")
-    plt.savefig(mean_path, dpi=150)
-    plt.close()
-    print(f"💾 Saved: {mean_path}")
-
-    # Std
-    plt.figure(figsize=(12, 6))
-    plt.bar(x, std, color='orange', alpha=0.7, label='Std Dev (σ)')
-    top_std_idx = np.argsort(-std)[:top_k]
-    plt.scatter(top_std_idx, std[top_std_idx], color='purple', s=80, label=f'Top {top_k} Std')
-    plt.title('Isolation Forest — Standard Deviation (σ) per Node', fontsize=14)
-    plt.xlabel('Node index (i)', fontsize=12)
-    plt.ylabel('Standard deviation of anomaly score', fontsize=12)
-    plt.grid(True, alpha=0.3, linestyle='--')
-    plt.tight_layout()
-    std_path = os.path.join(save_dir, "plot_std.png")
-    plt.savefig(std_path, dpi=150)
-    plt.close()
-    print(f"💾 Saved: {std_path}")
-
-
-def plot_nodes_hist_mean(mu: np.ndarray, method: str = "IF", save_dir: str = "plots"):
-    """
-    Bar chart over all nodes: X = node id, Y = mean anomaly score (μ).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    N = len(mu)
-    x = np.arange(N)
-
-    mu = np.nan_to_num(
-        mu,
-        nan=0.0,
-        posinf=np.max(mu[np.isfinite(mu)]) if np.any(np.isfinite(mu)) else 0.0,
-        neginf=0.0,
-    )
-
-    plt.figure(figsize=(14, 6))
-    plt.bar(x, mu, alpha=0.8)
-    plt.title(f"{method} — Mean (μ) per node")
-    plt.xlabel("Node ID")
-    plt.ylabel("Mean anomaly score")
-    plt.tight_layout()
-    out = os.path.join(save_dir, f"{method.lower()}_nodes_mean_bar.png")
-    plt.savefig(out, dpi=150)
-    plt.close()
-    print(f"💾 Saved: {out}")
-
-
-def plot_nodes_hist_std(std: np.ndarray, method: str = "IF", save_dir: str = "plots"):
-    """
-    Bar chart over all nodes: X = node id, Y = std of anomaly score (σ).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    N = len(std)
-    x = np.arange(N)
-
-    std = np.nan_to_num(
-        std,
-        nan=0.0,
-        posinf=np.max(std[np.isfinite(std)]) if np.any(np.isfinite(std)) else 0.0,
-        neginf=0.0,
-    )
-
-    plt.figure(figsize=(14, 6))
-    plt.bar(x, std, alpha=0.8)
-    plt.title(f"{method} — Std (σ) per node")
-    plt.xlabel("Node ID")
-    plt.ylabel("Std of anomaly score")
-    plt.tight_layout()
-    out = os.path.join(save_dir, f"{method.lower()}_nodes_std_bar.png")
-    plt.savefig(out, dpi=150)
-    plt.close()
-    print(f"💾 Saved: {out}")
-
-
-def plot_top_node_timeseries_by_method(
-    AS: np.ndarray,
-    mu: np.ndarray,
-    method_name: str,
-    save_dir: str = "plots",
-) -> int:
-    """
-    Plot time-series for the most anomalous node according to the given method.
-    - AS: [N, T] anomaly matrix for the method (already normalized to [0,1])
-    - mu: [N] per-node mean anomaly scores for the method
-    - method_name: "IF" or "LOF" (used for labels and filename)
-    Returns: selected node index.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    if AS is None or mu is None or len(mu) == 0:
-        print(f"[{method_name}] No data to plot.")
-        return -1
-
-    node_idx = int(np.argmax(np.nan_to_num(mu, nan=-1e30)))
-    y = AS[node_idx, :]
-    t = np.arange(y.shape[0])
-
-    plt.figure(figsize=(12, 5))
-    plt.plot(t, y, marker='o', linewidth=1.5, label=method_name)
-    plt.title(f"Most anomalous node time-series by {method_name} (node {node_idx})")
-    plt.xlabel("Time (snapshot index)")
-    plt.ylabel("Anomaly score")
-    plt.grid(True, alpha=0.3, linestyle="--")
-    plt.legend()
-    plt.tight_layout()
-
-    out = os.path.join(save_dir, f"top_node_{method_name.lower()}_{node_idx}_timeseries.png")
-    plt.savefig(out, dpi=150)
-    plt.close()
-    print(f"💾 Saved: {out}")
-    return node_idx
-
-
-def plot_if_lof_timeseries_for_nodes(
-    AS_if: np.ndarray,
-    AS_lof: np.ndarray,
-    node_indices,
-    save_dir: str = "plots/common_if_lof_timeseries",
-):
-    """
-    For each node in node_indices, plot a time-series with two lines:
-      - IF anomaly score over time
-      - LOF anomaly score over time
-
-    AS_if, AS_lof: [N, T] matrices (already normalized to [0,1]).
-    node_indices: iterable of node indices (ints).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-
-    if AS_if is None or AS_lof is None:
-        print("[IF+LOF] Missing anomaly matrices, skipping.")
-        return
-
-    if AS_if.shape != AS_lof.shape:
-        print(f"[IF+LOF] Shape mismatch: IF {AS_if.shape}, LOF {AS_lof.shape}")
-        return
-
-    N, T = AS_if.shape
-
-    for idx in sorted(node_indices):
-        if idx < 0 or idx >= N:
-            print(f"[IF+LOF] Node index {idx} out of range, skipping.")
-            continue
-
-        y_if = np.nan_to_num(AS_if[idx, :], nan=0.0)
-        y_lof = np.nan_to_num(AS_lof[idx, :], nan=0.0)
-        t = np.arange(T)
-
-        plt.figure(figsize=(12, 5))
-        plt.plot(t, y_if, marker='o', linewidth=1.5, label='IF')
-        plt.plot(t, y_lof, marker='x', linewidth=1.5, label='LOF')
-
-        plt.title(f"Node {idx} anomaly time-series (IF vs LOF)")
-        plt.xlabel("Time (snapshot index)")
-        plt.ylabel("Anomaly score")
-        plt.grid(True, alpha=0.3, linestyle="--")
-        plt.legend()
-        plt.tight_layout()
-
-        out_path = os.path.join(save_dir, f"node_{idx}_if_lof_timeseries.png")
-        plt.savefig(out_path, dpi=150)
-        plt.close()
-        print(f"💾 Saved: {out_path}")
-
-
-def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_path: str):
-    """
-    Statistical histogram of anomaly values across nodes.
-    """
-    values = np.nan_to_num(values, nan=0.0)
-    plt.figure(figsize=(10, 6))
-    plt.hist(values, bins=30, color='skyblue', edgecolor='black', alpha=0.7)
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel("Number of nodes")
-    plt.grid(True, alpha=0.3, linestyle="--")
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
-    plt.close()
-    print(f"💾 Saved: {save_path}")
-
 
 # ===========================
-#   NOISE INJECTION VALIDATION (full pipeline)
+#   NOISE INJECTION VALIDATION (full pipeline, but simple)
 # ===========================
 def _create_fake_embeddings_from_real(
     embedding_matrix: torch.Tensor,
     num_fake: int,
-    noise_scale: float = 2.0,
+    noise_scale: float = 3.0,
 ) -> torch.Tensor:
     """
     Create fake dynamic embeddings by perturbing existing node trajectories.
@@ -482,43 +262,29 @@ def _extend_edge_index_with_fake_nodes(
     return torch.stack([new_row, new_col], dim=0)
 
 
-def _compute_quantile_threshold(max_scores: np.ndarray, target_frac: float) -> float:
-    """
-    Compute an adaptive threshold so that roughly target_frac of nodes are flagged.
-    """
-    max_scores = np.nan_to_num(max_scores, nan=0.0)
-    target_frac = float(np.clip(target_frac, 1e-4, 0.5))
-    q = 1.0 - target_frac
-    return float(np.quantile(max_scores, q))
-
-
 def noise_injection_validation_full_pipeline(
     embedding_matrix: torch.Tensor,
     edge_index: torch.Tensor,
     model: torch.nn.Module,
     num_iterations: int = 5,
     k_percent: float = 5.0,
+    top_frac: float = 0.05,
     contamination: float = 0.05,
     lof_k: int = 30,
-    threshold: float | None = None,
     norm_scale: float = 0.1,
-    target_frac_for_threshold: float = 0.05,
 ):
     """
-    Full-pipeline noise injection validation (Algorithm 4 style).
+    Simple implementation of Algorithm 4 (noise injection via fake nodes),
+    passing the noisy network through the full pipeline (Dynhat + IF/LOF).
 
-    embedding_matrix: [N_real, T, F] dynamic embeddings (Stage 1 output).
-    edge_index: [2, E] base graph edges (same for all time steps in this implementation).
-    model: trained Dynhat model (structural + temporal encoder).
-    num_iterations: N (number of validation iterations).
-    k_percent: percentage of fake nodes relative to real nodes per iteration.
-    contamination, lof_k: parameters for IF/LOF (Stage 3).
-    threshold:
-        - If not None: use as fixed threshold in [0,1].
-        - If None: compute an adaptive threshold by quantile so that
-          ~target_frac_for_threshold of nodes are flagged.
-    norm_scale: scaling used for input normalization before Dynhat.
-    target_frac_for_threshold: fraction of nodes to flag in adaptive mode.
+    embedding_matrix: [N_real, T, F] dynamic embeddings (from Stage 1).
+    edge_index: [2, E] base graph.
+    model: trained Dynhat model (Stage 2 encoder).
+    num_iterations: N.
+    k_percent: k% fake nodes per iteration.
+    top_frac: fraction of nodes flagged as anomalies (threshold by quantile).
+    contamination, lof_k: parameters for IF/LOF in Stage 3.
+    norm_scale: same normalization factor as in main training.
     """
     if embedding_matrix.dim() != 3:
         raise ValueError("embedding_matrix must be [N, T, F]")
@@ -533,29 +299,29 @@ def noise_injection_validation_full_pipeline(
     edge_index = edge_index.to(device)
 
     num_fake_per_iter = max(1, int(round(k_percent / 100.0 * N_real)))
+    top_frac = float(np.clip(top_frac, 1e-4, 0.5))
 
     tpr_if_list, fpr_if_list = [], []
     tpr_lof_list, fpr_lof_list = [], []
 
     print(
-        f"\n===== Noise Injection Validation (full pipeline) =====\n"
+        f"\n===== Noise Injection Validation (full pipeline, simple) =====\n"
         f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
-        f"iterations: {num_iterations}, "
-        f"{'fixed threshold=' + str(threshold) if threshold is not None else 'adaptive quantile threshold'}\n"
+        f"iterations: {num_iterations}, top_frac={top_frac}\n"
     )
 
     for it in range(num_iterations):
         print(f"[Noise Validation] Iteration {it + 1}/{num_iterations}...")
 
-        # 1) Create fake dynamic embeddings (Stage 1 analogue for fake nodes)
+        # 1) Generate fake nodes in embedding space (simulate static + temporal features)
         fake_emb = _create_fake_embeddings_from_real(
             embedding_matrix=embedding_matrix,
             num_fake=num_fake_per_iter,
-            noise_scale=2.0,
+            noise_scale=3.0,
         )  # [num_fake, T, F]
 
         # 2) Augment embeddings and graph structure
-        emb_aug = torch.cat([embedding_matrix, fake_emb], dim=0)  # [N_real + num_fake, T, F]
+        emb_aug = torch.cat([embedding_matrix, fake_emb.to(device)], dim=0)  # [N_all, T, F]
         edge_aug = _extend_edge_index_with_fake_nodes(
             edge_index=edge_index,
             num_real=N_real,
@@ -565,7 +331,7 @@ def noise_injection_validation_full_pipeline(
 
         N_all = emb_aug.shape[0]
 
-        # 3) Full Dynhat forward (structural + temporal encoding, Stage 2)
+        # 3) Full Dynhat forward (Stage 2: structural + temporal encoding)
         model.eval()
         with torch.no_grad():
             outs_iter = []
@@ -588,19 +354,13 @@ def noise_injection_validation_full_pipeline(
             topk=0,
         )
 
-        # 5) Labels: fake indices are [N_real .. N_all-1]
-        # ---------- IF ----------
+        # 5) Aggregate scores over time: max_t AS_v^t (aligns with "exceeds threshold at any t")
         AS_if = res_aug.get("AS_if", None)
+        AS_lof = res_aug.get("AS_lof", None)
+
         if AS_if is not None:
             max_if = np.nanmax(AS_if, axis=1)  # [N_all]
-
-            if threshold is not None:
-                thr_if = threshold
-            else:
-                thr_if = _compute_quantile_threshold(
-                    max_if, target_frac=target_frac_for_threshold
-                )
-
+            thr_if = float(np.quantile(max_if, 1.0 - top_frac))
             flags_if = max_if >= thr_if
 
             flags_real_if = flags_if[:N_real]
@@ -621,18 +381,9 @@ def noise_injection_validation_full_pipeline(
                 f"real flagged: {num_real_flagged_if}/{N_real})"
             )
 
-        # ---------- LOF ----------
-        AS_lof = res_aug.get("AS_lof", None)
         if AS_lof is not None:
             max_lof = np.nanmax(AS_lof, axis=1)  # [N_all]
-
-            if threshold is not None:
-                thr_lof = threshold
-            else:
-                thr_lof = _compute_quantile_threshold(
-                    max_lof, target_frac=target_frac_for_threshold
-                )
-
+            thr_lof = float(np.quantile(max_lof, 1.0 - top_frac))
             flags_lof = max_lof >= thr_lof
 
             flags_real_lof = flags_lof[:N_real]
@@ -671,8 +422,7 @@ def noise_injection_validation_full_pipeline(
         "fpr_lof": fpr_lof_list,
         "num_fake_per_iter": num_fake_per_iter,
         "k_percent": k_percent,
-        "threshold": threshold,
-        "target_frac_for_threshold": target_frac_for_threshold,
+        "top_frac": top_frac,
     }
 
 
@@ -854,22 +604,17 @@ def main():
         "plots/hist_std_lof.png",
     )
 
-    # Decide threshold mode for validation:
-    # If user gave a positive threshold -> fixed; otherwise -> adaptive quantile.
-    fixed_threshold = args.noise_val_threshold if args.noise_val_threshold > 0 else None
-
-    # 8) Noise-injection validation (fake nodes → TPR/FPR) – full pipeline (Algorithm 4)
+    # 8) Noise-injection validation (Stage 4: Algorithm 4)
     _ = noise_injection_validation_full_pipeline(
-        embedding_matrix=embedding_matrix,   # [N, T, F] from dynamic Node2Vec
+        embedding_matrix=embedding_matrix,   # Stage 1 output (real nodes)
         edge_index=edge_index,              # base graph
-        model=model,                        # trained Dynhat (Stage 2 encoder)
+        model=model,                        # trained Dynhat
         num_iterations=args.noise_val_iters,
         k_percent=args.noise_val_k_percent,
+        top_frac=args.noise_val_top_frac,
         contamination=0.05,
         lof_k=30,
-        threshold=fixed_threshold,
         norm_scale=args.norm_scale,
-        target_frac_for_threshold=0.05,     # ~5% מהנודים יסומנו במצב אדפטיבי
     )
 
 
