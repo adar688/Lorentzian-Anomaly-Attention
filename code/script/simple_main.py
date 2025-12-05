@@ -106,6 +106,20 @@ def _debug_stats(name: str, arr: np.ndarray):
     print(f"[{name}] shape={a.shape}  min={a.min():.6f}  max={a.max():.6f}  mean={a.mean():.6f}")
 
 
+def print_dup_stats_numpy(X: np.ndarray, name: str):
+    """Print duplication statistics for a matrix X of shape [N, F]."""
+    unique_rows, counts = np.unique(X, axis=0, return_counts=True)
+    num_samples = X.shape[0]
+    num_unique = unique_rows.shape[0]
+    max_dup = counts.max()
+    num_duplicated = np.sum(counts > 1)
+    print(
+        f"[DUPS {name}] samples={num_samples}, unique={num_unique}, "
+        f"max_duplicates_for_single_vector={int(max_dup)}, "
+        f"num_vectors_with_duplicates={int(num_duplicated)}"
+    )
+
+
 # ======================
 #    IF/LOF OVER TIME
 # ======================
@@ -128,16 +142,7 @@ def run_if_lof_over_time(
 
     def _duplication_stats(X: np.ndarray, t: int):
         """Print basic duplication stats for a given time step."""
-        unique_rows, counts = np.unique(X, axis=0, return_counts=True)
-        num_samples = X.shape[0]
-        num_unique = unique_rows.shape[0]
-        max_dup = counts.max()
-        num_duplicated = np.sum(counts > 1)
-        print(
-            f"[LOF debug] t={t}: samples={num_samples}, unique={num_unique}, "
-            f"max_duplicates_for_single_vector={int(max_dup)}, "
-            f"num_vectors_with_duplicates={int(num_duplicated)}"
-        )
+        print_dup_stats_numpy(X, name=f"LOF_t={t}")
 
     # Ensure [N, T, C]
     if att.dim() == 2:
@@ -220,7 +225,7 @@ def run_if_lof_over_time(
 
     return {
         "mu_if": mu_if,
-            "std_if": std_if,
+        "std_if": std_if,
         "mu_lof": mu_lof,
         "std_lof": std_lof,
         "top_mu_if_idx": topk_idx(mu_if, topk),
@@ -557,6 +562,11 @@ def main():
     )  # torch.Tensor [N, T, F]
     print(f"✅ embedding_matrix shape: {tuple(embedding_matrix.shape)}")
 
+    # Duplicate stats on Node2Vec embeddings
+    emb_np = embedding_matrix.detach().cpu().numpy()  # [N, T, F]
+    for t in range(emb_np.shape[1]):
+        print_dup_stats_numpy(emb_np[:, t, :], name=f"Node2Vec_t={t}")
+
     args.nfeat = int(embedding_matrix.shape[-1])  # F
     args.num_nodes = int(embedding_matrix.shape[0])  # N
 
@@ -635,6 +645,11 @@ def main():
         f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}",
     )
 
+    # Duplicate stats on Dynhat + attention output
+    att_np = att_out.detach().cpu().numpy()  # [N, T, C]
+    for t in range(att_np.shape[1]):
+        print_dup_stats_numpy(att_np[:, t, :], name=f"Dynhat_att_t={t}")
+
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(
         att_out,
@@ -642,7 +657,7 @@ def main():
         lof_k=1000,
         topk=20,
         jitter_eps=1e-4,
-        print_dup_stats=True,  # אפשר להשאיר True להרצה דיאגנוסטית אחת
+        print_dup_stats=True,  # diagnostic once; you can turn this to False later
     )
     print("Top-20 IF(mean):", res["top_mu_if_idx"])
     print("Top-20 IF(std):", res["top_std_if_idx"])
