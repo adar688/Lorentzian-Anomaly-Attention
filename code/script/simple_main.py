@@ -31,9 +31,7 @@ from sklearn.neighbors import LocalOutlierFactor
 #        ARGS
 # ======================
 def parse_args():
-    p = argparse.ArgumentParser(
-        description="Dynhat + dynamic Node2Vec + temporal attention + IF/LOF + noise validation."
-    )
+    p = argparse.ArgumentParser(description="Dynhat + dynamic Node2Vec + temporal attention + IF/LOF + noise validation.")
 
     # --- Paths ---
     p.add_argument("--data-root", type=str, default="script/data/custom_out")
@@ -56,15 +54,15 @@ def parse_args():
     p.add_argument("--nout", type=int, default=64)
     p.add_argument("--heads", type=int, default=1)  # structural heads
     p.add_argument("--temporal_attention_layer_heads", type=int, default=1)
-    p.add_argument("--dropout", type=float, default=0.2)
+    p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--aggregation", type=str, default="att", choices=["att"])
 
     # Temporal layer selector
     p.add_argument("--seq-model", dest="seq_model", type=str, default="Attention")
 
     # --- Training ---
-    p.add_argument("--max-epoch", type=int, default=60)
-    p.add_argument("--lr", type=float, default=5e-4)
+    p.add_argument("--max-epoch", type=int, default=30)
+    p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=5e-4)
     p.add_argument("--norm-scale", type=float, default=0.1)
 
@@ -106,14 +104,6 @@ def _debug_stats(name: str, arr: np.ndarray):
     """Quick sanity stats printed once to ensure alignment across plots."""
     a = np.nan_to_num(arr, nan=0.0)
     print(f"[{name}] shape={a.shape}  min={a.min():.6f}  max={a.max():.6f}  mean={a.mean():.6f}")
-
-
-def safe_tensor(t: torch.Tensor, name: str) -> torch.Tensor:
-    """Ensure tensor has only finite values; replace NaN/Inf if needed."""
-    if not torch.isfinite(t).all():
-        print(f"[WARN] Non-finite values detected in {name}, applying torch.nan_to_num")
-        t = torch.nan_to_num(t, nan=0.0, posinf=1e4, neginf=-1e4)
-    return t
 
 
 # ======================
@@ -178,11 +168,10 @@ def run_if_lof_over_time(
         # Scale to [0, 1]
         X_t = MinMaxScaler().fit_transform(X_t)
 
-        # Optional debug for duplicates
         if print_dup_stats and t == 0:
             _duplication_stats(X_t, t)
 
-        # Add very small jitter to break exact duplicates (for LOF stability)
+        # Add small jitter to break exact duplicates
         if jitter_eps is not None and jitter_eps > 0.0:
             X_t = X_t + rng.normal(loc=0.0, scale=jitter_eps, size=X_t.shape)
 
@@ -231,7 +220,7 @@ def run_if_lof_over_time(
 
     return {
         "mu_if": mu_if,
-        "std_if": std_if,
+            "std_if": std_if,
         "mu_lof": mu_lof,
         "std_lof": std_lof,
         "top_mu_if_idx": topk_idx(mu_if, topk),
@@ -244,7 +233,7 @@ def run_if_lof_over_time(
 
 
 # ===========================
-#   NOISE INJECTION VALIDATION (full pipeline)
+#   NOISE INJECTION VALIDATION (full pipeline, but simple)
 # ===========================
 def _create_fake_embeddings_from_real(
     embedding_matrix: torch.Tensor,
@@ -275,13 +264,13 @@ def _create_fake_embeddings_from_real(
 
     fake_list = []
 
-    # --- Isolated-style fake nodes ---
+    # --- Isolated-style fake nodes: short bursts in time, moderate noise + strong spike ---
     for _ in range(num_iso):
         base_idx = torch.randint(0, N_real, (1,), device=device).item()
         base_seq = embedding_matrix[base_idx].clone()  # [T, F]
 
         noise = torch.randn_like(base_seq) * (noise_scale_iso * feat_std)
-        fake_seq = base_seq + noise
+        fake_seq = base_seq + noise  # base pattern + moderate noise
 
         # Temporal mask: only a small number of time steps are "active"
         mask = torch.zeros(T, 1, device=device)
@@ -298,7 +287,7 @@ def _create_fake_embeddings_from_real(
 
         fake_list.append(fake_seq)
 
-    # --- Spammy-style fake nodes ---
+    # --- Spammy-style fake nodes: strong magnitude, active at many time steps ---
     for _ in range(num_spam):
         base_idx = torch.randint(0, N_real, (1,), device=device).item()
         base_seq = embedding_matrix[base_idx].clone()  # [T, F]
@@ -337,7 +326,7 @@ def _extend_edge_index_with_fake_nodes(
     num_spam = num_fake // 2
     num_iso = num_fake - num_spam
 
-    # --- Isolated-style fake nodes ---
+    # --- Isolated-style fake nodes: very low / zero degree ---
     for i in range(num_iso):
         fake_idx = num_real + i
 
@@ -354,7 +343,7 @@ def _extend_edge_index_with_fake_nodes(
         row_parts.append(torch.cat([fake_vec, neighbors]))
         col_parts.append(torch.cat([neighbors, fake_vec]))
 
-    # --- Spammy-style fake nodes ---
+    # --- Spammy-style fake nodes: very high degree ---
     for j in range(num_spam):
         fake_idx = num_real + num_iso + j
         deg = max(10, int(np.random.poisson(lam=max(avg_degree_spam, 10))))
@@ -445,18 +434,12 @@ def noise_injection_validation_full_pipeline(
             outs_iter = []
             for t_idx in range(T):
                 x_t = emb_aug[:, t_idx, :]  # [N_all, F]
-                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1)
-                x_t = x_t * float(norm_scale)
-                x_t = safe_tensor(x_t, f"noise_x_t[{t_idx}]")
-
+                x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(norm_scale)
                 h_t = model(edge_aug, x=x_t)  # [N_all, C]
-                h_t = safe_tensor(h_t, f"noise_h_t[{t_idx}]")
                 outs_iter.append(h_t)
 
             X_iter = torch.stack(outs_iter, dim=1)  # [N_all, T, C]
-            X_iter = safe_tensor(X_iter, "noise_X_iter")
             att_iter = model.seq_model(X_iter)      # [N_all, T, C] or [N_all, C]
-            att_iter = safe_tensor(att_iter, "noise_att_iter")
             if att_iter.ndim == 2:
                 att_iter = att_iter.unsqueeze(1)
 
@@ -603,7 +586,7 @@ def main():
 
     print(
         f"🔧 Dynhat ready (nhid={args.nhid}, temporal_heads={args.temporal_attention_layer_heads}, "
-        f"classes={args.num_classes}, dropout={args.dropout}, norm_scale={args.norm_scale})"
+        f"classes={args.num_classes})"
     )
 
     # 4) Training (no validation)
@@ -615,41 +598,19 @@ def main():
         temporal_outputs = []
         for t in range(T_bins):
             x_t = embedding_matrix[:, t, :].to(device)  # [N, F]
-            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1)
-            x_t = x_t * float(args.norm_scale)
-            x_t = safe_tensor(x_t, f"x_t[{t}]")
-
+            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
             h_t = model(edge_index, x=x_t)  # [N, C=nhid+1]
-            h_t = safe_tensor(h_t, f"h_t[{t}]")
             temporal_outputs.append(h_t)
 
         X = torch.stack(temporal_outputs, dim=1)  # [N, T, C]
-        X = safe_tensor(X, "X")
-
         att = model.seq_model(X)  # [N, T, C] or [N, C]
-        att = safe_tensor(att, "att")
         if att.ndim == 2:
             att = att.unsqueeze(1)  # [N, 1, C]
 
         feat_last = att[:, -1, :]  # [N, C]
-        feat_last = safe_tensor(feat_last, "feat_last")
-
         logits = cls_head(feat_last)  # [N, num_classes]
-        logits = safe_tensor(logits, "logits")
-
         loss = F.cross_entropy(logits[idx_train], labels[idx_train])
-        if not torch.isfinite(loss):
-            print(f"[ERROR] Non-finite loss at epoch {epoch}: {loss.item()}")
-            break
-
         loss.backward()
-
-        # Gradient clipping for stability
-        torch.nn.utils.clip_grad_norm_(
-            list(model.parameters()) + list(cls_head.parameters()),
-            max_norm=5.0,
-        )
-
         optimizer.step()
 
         print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
@@ -661,19 +622,11 @@ def main():
         outs = []
         for t in range(T_bins):
             x_t = embedding_matrix[:, t, :].to(device)
-            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1)
-            x_t = x_t * float(args.norm_scale)
-            x_t = safe_tensor(x_t, f"x_eval_t[{t}]")
-
+            x_t = torch.nn.functional.normalize(x_t, p=2, dim=1) * float(args.norm_scale)
             h_t = model(edge_index, x=x_t)
-            h_t = safe_tensor(h_t, f"h_eval_t[{t}]")
             outs.append(h_t)
-
         X_eval = torch.stack(outs, dim=1)  # [N, T, C]
-        X_eval = safe_tensor(X_eval, "X_eval")
-
         att_out = model.seq_model(X_eval)  # [N, T, C] or [N, C]
-        att_out = safe_tensor(att_out, "att_out")
         if att_out.ndim == 2:
             att_out = att_out.unsqueeze(1)
 
@@ -686,10 +639,10 @@ def main():
     res = run_if_lof_over_time(
         att_out,
         contamination=0.05,
-        lof_k=100,
+        lof_k=1000,
         topk=20,
         jitter_eps=1e-4,
-        print_dup_stats=True,
+        print_dup_stats=True,  # אפשר להשאיר True להרצה דיאגנוסטית אחת
     )
     print("Top-20 IF(mean):", res["top_mu_if_idx"])
     print("Top-20 IF(std):", res["top_std_if_idx"])
