@@ -599,7 +599,7 @@ def main():
     )
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
-    res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=100, topk=20)
+    res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=1000, topk=20)
     print("Top-20 IF(mean):", res["top_mu_if_idx"])
     print("Top-20 IF(std):", res["top_std_if_idx"])
     print("Top-20 LOF(mean):", res["top_mu_lof_idx"])
@@ -676,7 +676,7 @@ def main():
         k_percent=args.noise_val_k_percent,
         top_frac=args.noise_val_top_frac,
         contamination=0.05,
-        lof_k=100,
+        lof_k=1000,
         norm_scale=args.norm_scale,
     )
 
