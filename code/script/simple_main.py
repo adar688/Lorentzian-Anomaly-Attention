@@ -110,7 +110,14 @@ def _debug_stats(name: str, arr: np.ndarray):
 # ======================
 #    IF/LOF OVER TIME
 # ======================
-def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
+def run_if_lof_over_time(
+    att,
+    contamination: float = 0.05,
+    lof_k: int = 30,
+    topk: int = 20,
+    jitter_eps: float = 1e-4,
+    print_dup_stats: bool = False,
+):
     """
     att: torch.Tensor of shape [N, T, C] or [N, C]
 
@@ -119,6 +126,21 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
       - top indices: top_mu_if_idx, top_std_if_idx, top_mu_lof_idx, top_std_lof_idx
       - AS_if, AS_lof: full time-series matrices [N, T] (after canonicalization)
     """
+
+    # Helper: print duplicate stats for debugging
+    def _duplication_stats(X: np.ndarray, t: int):
+        """Print basic duplication stats for a given time step."""
+        unique_rows, counts = np.unique(X, axis=0, return_counts=True)
+        num_samples = X.shape[0]
+        num_unique = unique_rows.shape[0]
+        max_dup = counts.max()
+        num_duplicated = np.sum(counts > 1)
+        print(
+            f"[LOF debug] t={t}: samples={num_samples}, unique={num_unique}, "
+            f"max_duplicates_for_single_vector={int(max_dup)}, "
+            f"num_vectors_with_duplicates={int(num_duplicated)}"
+        )
+
     # Ensure [N, T, C]
     if att.dim() == 2:
         att = att.unsqueeze(1)
@@ -131,16 +153,31 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
     lof_k = max(2, min(lof_k, N - 1))
     contamination = float(np.clip(contamination, 1.0 / max(N, 1), 0.2))
 
+    rng = np.random.RandomState(42)  # fixed seed for reproducibility
+
     # Per-timeframe anomaly scoring
     for t in range(T):
         X_t = A[:, t, :]
         X_t = np.nan_to_num(X_t, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        # Drop non-informative columns (zero std)
         col_std = X_t.std(axis=0)
         informative = col_std > 0
         if informative.sum() == 0:
             continue
         X_t = X_t[:, informative]
+
+        # Scale to [0, 1]
         X_t = MinMaxScaler().fit_transform(X_t)
+
+        # Optional: show duplication stats before jitter
+        if print_dup_stats and t == 0:
+            _duplication_stats(X_t, t)
+
+        # Add very small jitter to break exact duplicates (for LOF stability)
+        if jitter_eps is not None and jitter_eps > 0.0:
+            # jitter is applied after scaling, so values stay very close
+            X_t = X_t + rng.normal(loc=0.0, scale=jitter_eps, size=X_t.shape)
 
         # Isolation Forest (negating decision_function so that larger=more anomalous)
         try:
@@ -151,8 +188,8 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
                 n_jobs=-1,
             ).fit(X_t)
             AS_if[:, t] = -if_clf.decision_function(X_t)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[IF warning] t={t}: {e}")
 
         # Local Outlier Factor (convert to larger=more anomalous)
         try:
@@ -164,8 +201,8 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
             )
             _ = lof.fit_predict(X_t)
             AS_lof[:, t] = -(lof.negative_outlier_factor_)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LOF warning] t={t}: {e}")
 
     # Canonicalize both methods to non-negative scale (global min -> 0)
     AS_if = _normalize_minmax(AS_if)
@@ -197,7 +234,6 @@ def run_if_lof_over_time(att, contamination=0.05, lof_k=30, topk=20):
         "AS_if": AS_if,
         "AS_lof": AS_lof,
     }
-
 
 
 # ===========================
@@ -605,7 +641,15 @@ def main():
     )
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
-    res = run_if_lof_over_time(att_out, contamination=0.05, lof_k=1000, topk=20)
+    res = run_if_lof_over_time(
+    att_out,
+    contamination=0.05,
+    lof_k=100,
+    topk=20,
+    jitter_eps=1e-4,
+    print_dup_stats=True,  # פעם-פעמיים להרצה דיאגנוסטית
+)
+
     print("Top-20 IF(mean):", res["top_mu_if_idx"])
     print("Top-20 IF(std):", res["top_std_if_idx"])
     print("Top-20 LOF(mean):", res["top_mu_lof_idx"])
