@@ -260,3 +260,48 @@ def plot_noise_validation_tpr(
 
     print(f"[plot_noise_validation_tpr] Saved TPR plot to: {save_path}")
 
+def plot_noise_validation_fpr(
+    fpr_if,
+    fpr_lof=None,
+    save_path: str = "plots/noise_validation_fpr.png",
+):
+    """
+    Plot FPR over noise-injection validation iterations for IF (and optionally LOF).
+
+    fpr_if: list or array of FPR values for Isolation Forest
+    fpr_lof: optional list/array of FPR values for LOF
+    save_path: where to save the PNG file
+    """
+    if fpr_if is None or len(fpr_if) == 0:
+        print("[plot_noise_validation_fpr] No FPR values for IF, skipping plot.")
+        return
+
+    iterations = list(range(1, len(fpr_if) + 1))
+
+    dir_name = os.path.dirname(save_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    plt.figure(figsize=(8, 5))
+
+    # Plot IF FPR
+    plt.plot(iterations, fpr_if, marker="o", linestyle="-", label="IF FPR")
+
+    # Optionally plot LOF FPR
+    if fpr_lof is not None and len(fpr_lof) == len(fpr_if):
+        plt.plot(iterations, fpr_lof, marker="s", linestyle="--", label="LOF FPR")
+
+    plt.xlabel("Validation iteration")
+    plt.ylabel("FPR")
+    plt.title("Noise-injection validation: FPR over iterations")
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.xticks(iterations)
+    plt.ylim(0.0, 1.0)
+
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+
+    print(f"[plot_noise_validation_fpr] Saved FPR plot to: {save_path}")
+

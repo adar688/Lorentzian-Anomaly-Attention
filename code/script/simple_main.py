@@ -686,5 +686,10 @@ def main():
             tpr_lof=val_stats.get("tpr_lof", []),
             save_path="plots/noise_validation_tpr.png",
         )
+        plot_noise_validation_fpr(
+            fpr_if=val_stats.get("fpr_if", []),
+            fpr_lof=val_stats.get("fpr_lof", []),
+            save_path="plots/noise_validation_fpr.png",
+        )
 if __name__ == "__main__":
     main()
