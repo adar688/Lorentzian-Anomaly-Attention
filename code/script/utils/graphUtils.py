@@ -214,3 +214,49 @@ def plot_hist_distribution(values: np.ndarray, title: str, xlabel: str, save_pat
     plt.savefig(save_path, dpi=150)
     plt.close()
     print(f"💾 Saved: {save_path}")
+
+def plot_noise_validation_tpr(
+    tpr_if,
+    tpr_lof=None,
+    save_path: str = "plots/noise_validation_tpr.png",
+):
+    """
+    Plot TPR over noise-injection validation iterations for IF (and optionally LOF).
+
+    tpr_if: list or array of TPR values for Isolation Forest, length = num_iterations
+    tpr_lof: optional list or array of TPR values for LOF (same length)
+    save_path: path to save the PNG plot
+    """
+    if tpr_if is None or len(tpr_if) == 0:
+        print("[plot_noise_validation_tpr] No TPR values for IF, skipping plot.")
+        return
+
+    iterations = list(range(1, len(tpr_if) + 1))
+
+    dir_name = os.path.dirname(save_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    plt.figure(figsize=(8, 5))
+
+    # Plot IF TPR
+    plt.plot(iterations, tpr_if, marker="o", linestyle="-", label="IF TPR")
+
+    # Optionally plot LOF TPR
+    if tpr_lof is not None and len(tpr_lof) == len(tpr_if):
+        plt.plot(iterations, tpr_lof, marker="s", linestyle="--", label="LOF TPR")
+
+    plt.xlabel("Validation iteration")
+    plt.ylabel("TPR")
+    plt.title("Noise-injection validation: TPR over iterations")
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.xticks(iterations)
+    plt.ylim(0.0, 1.0)
+
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+
+    print(f"[plot_noise_validation_tpr] Saved TPR plot to: {save_path}")
+

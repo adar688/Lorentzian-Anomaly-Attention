@@ -680,6 +680,11 @@ def main():
         norm_scale=args.norm_scale,
     )
 
-
+    if val_stats is not None:
+        plot_noise_validation_tpr(
+            tpr_if=val_stats.get("tpr_if", []),
+            tpr_lof=val_stats.get("tpr_lof", []),
+            save_path="plots/noise_validation_tpr.png",
+        )
 if __name__ == "__main__":
     main()
