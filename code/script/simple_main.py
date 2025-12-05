@@ -69,10 +69,14 @@ def parse_args():
     # --- Device ---
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
-    # --- Noise validation (Stage 4) ---
-    p.add_argument("--noise_val_iters", type=int, default=5)         # כמה איטרציות N
-    p.add_argument("--noise_val_k_percent", type=float, default=5.0) # כמה אחוז פייקים k%
-    p.add_argument("--noise_val_top_frac", type=float, default=0.05) # איזה חלק מהנודים נסמן כאנומליות (top X%)
+        # --- Noise validation (Stage 4) ---
+    p.add_argument("--noise_val_iters", type=int, default=5)
+    p.add_argument("--noise_val_k_percent", type=float, default=20.0)
+    p.add_argument("--noise_val_top_frac", type=float, default=0.10)
+
+    # Average degrees for fake nodes in noise validation
+    p.add_argument("--noise_val_avg_degree_iso", type=int, default=5)
+    p.add_argument("--noise_val_avg_degree_spam", type=int, default=400)
 
 
     return p.parse_args()
@@ -338,6 +342,8 @@ def noise_injection_validation_full_pipeline(
     contamination: float = 0.05,
     lof_k: int = 30,
     norm_scale: float = 0.1,
+    avg_degree_iso: int = 1,
+    avg_degree_spam: int = 200,
 ):
     """
     Implementation of Algorithm 4 (noise injection via fake nodes),
@@ -387,8 +393,8 @@ def noise_injection_validation_full_pipeline(
             edge_index=edge_index,
             num_real=N_real,
             num_fake=num_fake_per_iter,
-            avg_degree_iso=1,
-            avg_degree_spam=200,
+            avg_degree_iso=avg_degree_iso,
+            avg_degree_spam=avg_degree_spam,
         )  # [2, E_aug]
 
         N_all = emb_aug.shape[0]
@@ -676,8 +682,10 @@ def main():
         k_percent=args.noise_val_k_percent,
         top_frac=args.noise_val_top_frac,
         contamination=0.05,
-        lof_k=1000,
+        lof_k=100,
         norm_scale=args.norm_scale,
+        avg_degree_iso=args.noise_val_avg_degree_iso,
+        avg_degree_spam=args.noise_val_avg_degree_spam,
     )
 
     if val_stats is not None:
