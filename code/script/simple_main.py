@@ -668,7 +668,7 @@ def main():
     )
 
     # 8) Noise-injection validation (Stage 4: Algorithm 4)
-    _ = noise_injection_validation_full_pipeline(
+    val_stats = noise_injection_validation_full_pipeline(
         embedding_matrix=embedding_matrix,   # Stage 1 output (real nodes)
         edge_index=edge_index,              # base graph
         model=model,                        # trained Dynhat
