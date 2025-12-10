@@ -156,6 +156,8 @@ def run_if_lof_over_time(
     lof_k = max(2, min(lof_k, N - 1))
     contamination = float(np.clip(contamination, 1.0 / max(N, 1), 0.2))
 
+    # NOTE: fixed RandomState(42) keeps exact same jitter for same X_t across calls.
+    # For debugging we keep it as-is to see if att_iter itself changes.
     rng = np.random.RandomState(42)
 
     # Per-timeframe anomaly scoring
@@ -421,6 +423,14 @@ def noise_injection_validation_full_pipeline(
             noise_scale_spam=5.0,
         )  # [num_fake, T, F]
 
+        # DEBUG: inspect the first fake node embedding for first few iterations
+        if it < 3:
+            with torch.no_grad():
+                print(
+                    f"[DEBUG] fake_emb[0, 0, :5] iter={it}:",
+                    fake_emb[0, 0, :5].detach().cpu().numpy(),
+                )
+
         # 2) Augment embeddings and graph structure
         emb_aug = torch.cat([embedding_matrix, fake_emb.to(device)], dim=0)  # [N_all, T, F]
         edge_aug = _extend_edge_index_with_fake_nodes(
@@ -464,6 +474,14 @@ def noise_injection_validation_full_pipeline(
         # --- IF ---
         if AS_if is not None:
             max_if = np.nanmax(AS_if, axis=1)  # [N_all]
+
+            # DEBUG: check if IF scores change across iterations
+            if it < 3:
+                print(
+                    f"[DEBUG] iter={it} max_if[:5]:",
+                    np.round(max_if[:5], 6),
+                )
+
             thr_if = float(np.quantile(max_if, 1.0 - top_frac))
             flags_if = max_if >= thr_if
 
