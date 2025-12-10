@@ -691,7 +691,7 @@ def main():
     res = run_if_lof_over_time(
         att_out,
         contamination=0.12,
-        lof_k=10,
+        lof_k=20,
         topk=20,
         jitter_eps=1e-4,
         print_dup_stats=True,
