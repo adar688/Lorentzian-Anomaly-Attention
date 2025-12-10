@@ -81,7 +81,7 @@ def parse_args():
     # top_frac: fraction of nodes flagged as anomalies (top scores)
     p.add_argument("--noise_val_iters", type=int, default=5)
     p.add_argument("--noise_val_k_percent", type=float, default=10.0)   # ~10% fake nodes
-    p.add_argument("--noise_val_top_frac", type=float, default=0.12)   # top 12% flagged as anomalies
+    p.add_argument("--noise_val_top_frac", type=float, default=0.14)   # top 14% flagged as anomalies
 
     # Average degrees for fake nodes in noise validation
     p.add_argument("--noise_val_avg_degree_iso", type=int, default=5)
@@ -89,8 +89,11 @@ def parse_args():
 
     # Noise strength for fake nodes (controls how "hard" the task is)
     p.add_argument("--noise_val_iso_noise", type=float, default=1.5)
-    p.add_argument("--noise_val_spam_noise", type=float, default=3.0)
-    p.add_argument("--noise_val_spam_scale", type=float, default=6.0)
+    p.add_argument("--noise_val_spam_noise", type=float, default=4.0)
+    p.add_argument("--noise_val_spam_scale", type=float, default=8.0)
+
+    # Ratio of spammy (clustered) fake nodes
+    p.add_argument("--noise_val_spam_ratio", type=float, default=0.8)
 
     return p.parse_args()
 
@@ -140,7 +143,7 @@ def print_dup_stats_numpy(X: np.ndarray, name: str):
 def run_if_lof_over_time(
     att: torch.Tensor,
     contamination: float = 0.12,
-    lof_k: int = 20,
+    lof_k: int = 10,
     topk: int = 20,
     jitter_eps: float = 1e-4,
     print_dup_stats: bool = False,
@@ -258,13 +261,14 @@ def _create_fake_embeddings_from_real(
     embedding_matrix: torch.Tensor,
     num_fake: int,
     noise_scale_iso: float = 1.5,
-    noise_scale_spam: float = 3.0,
-    spam_global_scale: float = 6.0,
+    noise_scale_spam: float = 4.0,
+    spam_global_scale: float = 8.0,
+    spam_ratio: float = 0.8,
 ) -> torch.Tensor:
     """
     Create a mixed set of fake dynamic embeddings:
-      - Half "isolated" style (short temporal activity, moderate noise + spike)
-      - Half "spammy" style (cluster-based anomalies with stronger magnitude)
+      - A small fraction "isolated" style (short temporal activity, moderate noise + spike)
+      - A large fraction "spammy" style: cluster-based anomalies with stronger magnitude.
 
     The spammy nodes are constructed as a tight fake cluster around a single
     real "cluster center", so that LOF can detect them as a local-density anomaly
@@ -281,7 +285,10 @@ def _create_fake_embeddings_from_real(
     feat_std = flat.std(dim=0, keepdim=True)  # [1, F]
     feat_std = torch.where(feat_std == 0, torch.full_like(feat_std, 1e-6), feat_std)
 
-    num_spam = num_fake // 2
+    # Determine how many spam/isolated fake nodes to create
+    spam_ratio = float(np.clip(spam_ratio, 0.0, 1.0))
+    num_spam = int(round(num_fake * spam_ratio))
+    num_spam = max(1, min(num_spam, num_fake - 1))
     num_iso = num_fake - num_spam
 
     fake_list = []
@@ -303,7 +310,7 @@ def _create_fake_embeddings_from_real(
 
         fake_seq = fake_seq * mask
 
-        # Local spike (not extremely large to avoid trivial separation)
+        # Local spike
         random_t = torch.randint(0, T, (1,), device=device).item()
         jump = torch.randn(1, F, device=device) * (noise_scale_iso * 3.0 * feat_std)
         fake_seq[random_t] += jump.squeeze(0)
@@ -316,9 +323,8 @@ def _create_fake_embeddings_from_real(
     cluster_center = embedding_matrix[cluster_center_idx].clone()  # [T, F]
 
     for _ in range(num_spam):
-        # Small local noise to create a tight fake cluster
+        # Local noise to create a tight fake cluster
         local_noise = torch.randn_like(cluster_center) * (noise_scale_spam * feat_std * 0.5)
-
         # Cluster around center + global amplification
         fake_seq = (cluster_center + local_noise) * spam_global_scale
         fake_list.append(fake_seq)
@@ -335,8 +341,8 @@ def _extend_edge_index_with_fake_nodes(
 ) -> torch.Tensor:
     """
     Extend base edge_index with two types of fake nodes:
-      - First half: "isolated" style (very low or zero degree)
-      - Second half: "spammy" style (very high degree, many edges to random real nodes)
+      - First set: "isolated" style (very low or zero degree)
+      - Second set: "spammy" style (very high degree, many edges to random real nodes).
     edge_index: [2, E]
     Nodes 0..num_real-1 are real; new fake nodes get indices num_real..num_real+num_fake-1.
     """
@@ -347,6 +353,7 @@ def _extend_edge_index_with_fake_nodes(
     row_parts = [edge_index[0]]
     col_parts = [edge_index[1]]
 
+    # Split fake nodes into isolated and spammy sets similar to embedding creation
     num_spam = num_fake // 2
     num_iso = num_fake - num_spam
 
@@ -393,20 +400,21 @@ def noise_injection_validation_full_pipeline(
     model: torch.nn.Module,
     num_iterations: int = 5,
     k_percent: float = 10.0,
-    top_frac: float = 0.12,
+    top_frac: float = 0.14,
     contamination: float = 0.12,
-    lof_k: int = 20,
+    lof_k: int = 10,
     norm_scale: float = 0.1,
     avg_degree_iso: int = 5,
     avg_degree_spam: int = 200,
     iso_noise: float = 1.5,
-    spam_noise: float = 3.0,
-    spam_scale: float = 6.0,
+    spam_noise: float = 4.0,
+    spam_scale: float = 8.0,
+    spam_ratio: float = 0.8,
 ):
     """
     Noise injection validation with mixed fake nodes:
-      - Half of the fake nodes are "isolated" (low/zero degree, short temporal activity + spike)
-      - Half are "spammy" cluster-based anomalies (tight cluster around a real center,
+      - A fraction of the fake nodes are "isolated" (low/zero degree, short temporal activity + spike)
+      - A fraction are "spammy" cluster-based anomalies (tight cluster around a real center,
         with stronger magnitude and high degree).
 
     The full pipeline is applied:
@@ -434,7 +442,7 @@ def noise_injection_validation_full_pipeline(
         f"\n===== Noise Injection Validation (full pipeline, mixed fake nodes) =====\n"
         f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
         f"iterations: {num_iterations}, top_frac={top_frac}, "
-        f"contamination={contamination}, lof_k={lof_k}\n"
+        f"contamination={contamination}, lof_k={lof_k}, spam_ratio={spam_ratio}\n"
     )
 
     for it in range(num_iterations):
@@ -447,6 +455,7 @@ def noise_injection_validation_full_pipeline(
             noise_scale_iso=iso_noise,
             noise_scale_spam=spam_noise,
             spam_global_scale=spam_scale,
+            spam_ratio=spam_ratio,
         )  # [num_fake, T, F]
 
         # 2) Augment embeddings and graph structure
@@ -682,7 +691,7 @@ def main():
     res = run_if_lof_over_time(
         att_out,
         contamination=0.12,
-        lof_k=20,
+        lof_k=10,
         topk=20,
         jitter_eps=1e-4,
         print_dup_stats=True,
@@ -763,13 +772,14 @@ def main():
         k_percent=args.noise_val_k_percent,
         top_frac=args.noise_val_top_frac,
         contamination=0.12,
-        lof_k=20,
+        lof_k=10,
         norm_scale=args.norm_scale,
         avg_degree_iso=args.noise_val_avg_degree_iso,
         avg_degree_spam=args.noise_val_avg_degree_spam,
         iso_noise=args.noise_val_iso_noise,
         spam_noise=args.noise_val_spam_noise,
         spam_scale=args.noise_val_spam_scale,
+        spam_ratio=args.noise_val_spam_ratio,
     )
 
     if val_stats is not None:
