@@ -8,7 +8,8 @@ MAIN (consistent anomaly plotting + noise-injection validation):
 4) Short CE training on idx_train (no validation)
 5) Compute IF/LOF anomaly scores over time, canonicalize to a non-negative scale,
    and generate multiple consistent plots (bars, scatter, histograms, time series)
-6) Validation via noise injection (fake nodes) with full pipeline (Node2Vec embeddings -> Dynhat -> Attention -> IF/LOF)
+6) Validation via noise injection (fake nodes) with full pipeline
+   (Node2Vec embeddings -> Dynhat -> Attention -> IF/LOF)
 """
 
 import argparse
@@ -31,7 +32,9 @@ from sklearn.neighbors import LocalOutlierFactor
 #        ARGS
 # ======================
 def parse_args():
-    p = argparse.ArgumentParser(description="Dynhat + dynamic Node2Vec + temporal attention + IF/LOF + noise validation.")
+    p = argparse.ArgumentParser(
+        description="Dynhat + dynamic Node2Vec + temporal attention + IF/LOF + noise validation."
+    )
 
     # --- Paths ---
     p.add_argument("--data-root", type=str, default="script/data/custom_out")
@@ -67,16 +70,27 @@ def parse_args():
     p.add_argument("--norm-scale", type=float, default=0.1)
 
     # --- Device ---
-    p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
 
     # --- Noise validation (Stage 4) ---
+    # k_percent: percentage of fake nodes relative to real nodes
+    # top_frac: fraction of nodes flagged as anomalies (top scores)
     p.add_argument("--noise_val_iters", type=int, default=5)
-    p.add_argument("--noise_val_k_percent", type=float, default=20.0)
-    p.add_argument("--noise_val_top_frac", type=float, default=0.10)
+    p.add_argument("--noise_val_k_percent", type=float, default=10.0)   # 10% fake nodes
+    p.add_argument("--noise_val_top_frac", type=float, default=0.08)   # top 8% flagged
 
     # Average degrees for fake nodes in noise validation
     p.add_argument("--noise_val_avg_degree_iso", type=int, default=5)
-    p.add_argument("--noise_val_avg_degree_spam", type=int, default=400)
+    p.add_argument("--noise_val_avg_degree_spam", type=int, default=200)
+
+    # Noise strength for fake nodes (controls how "hard" the task is)
+    p.add_argument("--noise_val_iso_noise", type=float, default=1.0)
+    p.add_argument("--noise_val_spam_noise", type=float, default=2.5)
+    p.add_argument("--noise_val_spam_scale", type=float, default=4.0)
 
     return p.parse_args()
 
@@ -124,7 +138,7 @@ def print_dup_stats_numpy(X: np.ndarray, name: str):
 #    IF/LOF OVER TIME
 # ======================
 def run_if_lof_over_time(
-    att,
+    att: torch.Tensor,
     contamination: float = 0.05,
     lof_k: int = 30,
     topk: int = 20,
@@ -156,9 +170,7 @@ def run_if_lof_over_time(
     lof_k = max(2, min(lof_k, N - 1))
     contamination = float(np.clip(contamination, 1.0 / max(N, 1), 0.2))
 
-    # NOTE: fixed RandomState(42) keeps exact same jitter for same X_t across calls.
-    # For debugging we keep it as-is to see if att_iter itself changes.
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(42)  # fixed jitter for reproducibility given att
 
     # Per-timeframe anomaly scoring
     for t in range(T):
@@ -240,20 +252,22 @@ def run_if_lof_over_time(
 
 
 # ===========================
-#   NOISE INJECTION VALIDATION (full pipeline, but simple)
+#   NOISE INJECTION - FAKE EMBEDDINGS
 # ===========================
 def _create_fake_embeddings_from_real(
     embedding_matrix: torch.Tensor,
     num_fake: int,
-    noise_scale_iso: float = 2.0,
-    noise_scale_spam: float = 5.0,
+    noise_scale_iso: float = 1.0,
+    noise_scale_spam: float = 2.5,
+    spam_global_scale: float = 4.0,
 ) -> torch.Tensor:
     """
     Create a mixed set of fake dynamic embeddings:
-      - Half "isolated" style (weak, short temporal activity, low/zero degree)
-      - Half "spammy" style (very strong magnitude, over-connected)
-    embedding_matrix: [N_real, T, F]
-    Returns: [num_fake, T, F]
+      - Half "isolated" style (short temporal activity, moderate noise + spike)
+      - Half "spammy" style (stronger magnitude, more active, but not insanely huge)
+
+    The noise scales and spam_global_scale control how "easy" it is for IF/LOF
+    to separate fake nodes from real ones. Smaller values -> harder task.
     """
     if embedding_matrix.dim() != 3:
         raise ValueError("embedding_matrix must be [N, T, F]")
@@ -271,30 +285,31 @@ def _create_fake_embeddings_from_real(
 
     fake_list = []
 
-    # --- Isolated-style fake nodes: short bursts in time, moderate noise + strong spike ---
+    # --- Isolated-style fake nodes ---
     for _ in range(num_iso):
         base_idx = torch.randint(0, N_real, (1,), device=device).item()
         base_seq = embedding_matrix[base_idx].clone()  # [T, F]
 
+        # Moderate noise
         noise = torch.randn_like(base_seq) * (noise_scale_iso * feat_std)
-        fake_seq = base_seq + noise  # base pattern + moderate noise
+        fake_seq = base_seq + noise
 
-        # Temporal mask: only a small number of time steps are "active"
+        # Temporal mask: only a few time steps are active
         mask = torch.zeros(T, 1, device=device)
         num_active = torch.randint(low=1, high=min(3, T + 1), size=(1,), device=device).item()
         active_indices = torch.randint(0, T, (num_active,), device=device)
         mask[active_indices] = 1.0
 
-        fake_seq = fake_seq * mask  # mostly "off" in time
+        fake_seq = fake_seq * mask
 
-        # Add a strong spike at one random time step (temporal anomaly)
+        # Local spike (not extremely large to avoid trivial separation)
         random_t = torch.randint(0, T, (1,), device=device).item()
-        jump = torch.randn(1, F, device=device) * (noise_scale_iso * 5.0 * feat_std)
+        jump = torch.randn(1, F, device=device) * (noise_scale_iso * 3.0 * feat_std)
         fake_seq[random_t] += jump.squeeze(0)
 
         fake_list.append(fake_seq)
 
-    # --- Spammy-style fake nodes: strong magnitude, active at many time steps ---
+    # --- Spammy-style fake nodes ---
     for _ in range(num_spam):
         base_idx = torch.randint(0, N_real, (1,), device=device).item()
         base_seq = embedding_matrix[base_idx].clone()  # [T, F]
@@ -302,8 +317,8 @@ def _create_fake_embeddings_from_real(
         noise = torch.randn_like(base_seq) * (noise_scale_spam * feat_std)
         fake_seq = base_seq + noise
 
-        # Amplify overall magnitude so it is clearly out-of-distribution
-        fake_seq = fake_seq * 10.0
+        # Global amplification, but gentler than x10
+        fake_seq = fake_seq * spam_global_scale
         fake_list.append(fake_seq)
 
     return torch.stack(fake_list, dim=0)  # [num_fake, T, F]
@@ -356,7 +371,6 @@ def _extend_edge_index_with_fake_nodes(
         deg = max(10, int(np.random.poisson(lam=max(avg_degree_spam, 10))))
         deg = min(deg, num_real)
 
-        # Use unique neighbors where possible
         neighbors = torch.randperm(num_real, device=device)[:deg]
         fake_vec = torch.full((deg,), fake_idx, device=device, dtype=torch.long)
 
@@ -368,25 +382,36 @@ def _extend_edge_index_with_fake_nodes(
     return torch.stack([new_row, new_col], dim=0)
 
 
+# ===========================
+#   NOISE INJECTION VALIDATION (full pipeline)
+# ===========================
 def noise_injection_validation_full_pipeline(
     embedding_matrix: torch.Tensor,
     edge_index: torch.Tensor,
     model: torch.nn.Module,
     num_iterations: int = 5,
-    k_percent: float = 5.0,
-    top_frac: float = 0.05,
+    k_percent: float = 10.0,
+    top_frac: float = 0.08,
     contamination: float = 0.05,
     lof_k: int = 30,
     norm_scale: float = 0.1,
     avg_degree_iso: int = 1,
     avg_degree_spam: int = 200,
+    iso_noise: float = 1.0,
+    spam_noise: float = 2.5,
+    spam_scale: float = 4.0,
 ):
     """
-    Implementation of Algorithm 4 (noise injection via fake nodes),
+    Implementation of noise injection validation (Algorithm 4 style),
     using a mixed strategy:
       - Half of the fake nodes are "isolated" (low/zero degree, short temporal activity + spike)
-      - Half are "spammy" (high degree, strong magnitude).
+      - Half are "spammy" (high degree, stronger magnitude).
     The full pipeline is applied: embeddings -> Dynhat -> temporal attention -> IF/LOF.
+
+    k_percent controls how many fake nodes are added per iteration.
+    top_frac controls what fraction of highest anomaly scores are flagged.
+    iso_noise, spam_noise, spam_scale control how "easy" it is for IF/LOF
+    to distinguish fake nodes from real ones.
     """
     if embedding_matrix.dim() != 3:
         raise ValueError("embedding_matrix must be [N, T, F]")
@@ -419,17 +444,10 @@ def noise_injection_validation_full_pipeline(
         fake_emb = _create_fake_embeddings_from_real(
             embedding_matrix=embedding_matrix,
             num_fake=num_fake_per_iter,
-            noise_scale_iso=2.0,
-            noise_scale_spam=5.0,
+            noise_scale_iso=iso_noise,
+            noise_scale_spam=spam_noise,
+            spam_global_scale=spam_scale,
         )  # [num_fake, T, F]
-
-        # DEBUG: inspect the first fake node embedding for first few iterations
-        if it < 3:
-            with torch.no_grad():
-                print(
-                    f"[DEBUG] fake_emb[0, 0, :5] iter={it}:",
-                    fake_emb[0, 0, :5].detach().cpu().numpy(),
-                )
 
         # 2) Augment embeddings and graph structure
         emb_aug = torch.cat([embedding_matrix, fake_emb.to(device)], dim=0)  # [N_all, T, F]
@@ -474,14 +492,6 @@ def noise_injection_validation_full_pipeline(
         # --- IF ---
         if AS_if is not None:
             max_if = np.nanmax(AS_if, axis=1)  # [N_all]
-
-            # DEBUG: check if IF scores change across iterations
-            if it < 3:
-                print(
-                    f"[DEBUG] iter={it} max_if[:5]:",
-                    np.round(max_if[:5], 6),
-                )
-
             thr_if = float(np.quantile(max_if, 1.0 - top_frac))
             flags_if = max_if >= thr_if
 
@@ -675,7 +685,7 @@ def main():
         lof_k=1000,
         topk=20,
         jitter_eps=1e-4,
-        print_dup_stats=True,  # diagnostic once; you can turn this to False later
+        print_dup_stats=True,
     )
     print("Top-20 IF(mean):", res["top_mu_if_idx"])
     print("Top-20 IF(std):", res["top_std_if_idx"])
@@ -744,7 +754,7 @@ def main():
         "plots/hist_std_lof.png",
     )
 
-    # 8) Noise-injection validation (Stage 4: Algorithm 4)
+    # 8) Noise-injection validation (Stage 4)
     val_stats = noise_injection_validation_full_pipeline(
         embedding_matrix=embedding_matrix,   # Stage 1 output (real nodes)
         edge_index=edge_index,              # base graph
@@ -757,6 +767,9 @@ def main():
         norm_scale=args.norm_scale,
         avg_degree_iso=args.noise_val_avg_degree_iso,
         avg_degree_spam=args.noise_val_avg_degree_spam,
+        iso_noise=args.noise_val_iso_noise,
+        spam_noise=args.noise_val_spam_noise,
+        spam_scale=args.noise_val_spam_scale,
     )
 
     if val_stats is not None:
