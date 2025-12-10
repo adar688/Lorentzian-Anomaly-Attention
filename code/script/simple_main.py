@@ -81,16 +81,16 @@ def parse_args():
     # top_frac: fraction of nodes flagged as anomalies (top scores)
     p.add_argument("--noise_val_iters", type=int, default=5)
     p.add_argument("--noise_val_k_percent", type=float, default=10.0)   # 10% fake nodes
-    p.add_argument("--noise_val_top_frac", type=float, default=0.08)   # top 8% flagged
+    p.add_argument("--noise_val_top_frac", type=float, default=0.10)   # top 8% flagged
 
     # Average degrees for fake nodes in noise validation
     p.add_argument("--noise_val_avg_degree_iso", type=int, default=5)
     p.add_argument("--noise_val_avg_degree_spam", type=int, default=200)
 
     # Noise strength for fake nodes (controls how "hard" the task is)
-    p.add_argument("--noise_val_iso_noise", type=float, default=1.0)
-    p.add_argument("--noise_val_spam_noise", type=float, default=2.5)
-    p.add_argument("--noise_val_spam_scale", type=float, default=4.0)
+    p.add_argument("--noise_val_iso_noise", type=float, default=1.5)
+    p.add_argument("--noise_val_spam_noise", type=float, default=3.0)
+    p.add_argument("--noise_val_spam_scale", type=float, default=6.0)
 
     return p.parse_args()
 
@@ -392,8 +392,8 @@ def noise_injection_validation_full_pipeline(
     num_iterations: int = 5,
     k_percent: float = 10.0,
     top_frac: float = 0.08,
-    contamination: float = 0.05,
-    lof_k: int = 30,
+    contamination: float = 0.10,
+    lof_k: int = 50,
     norm_scale: float = 0.1,
     avg_degree_iso: int = 1,
     avg_degree_spam: int = 200,
@@ -681,8 +681,8 @@ def main():
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(
         att_out,
-        contamination=0.05,
-        lof_k=1000,
+        contamination=0.10,
+        lof_k=50,
         topk=20,
         jitter_eps=1e-4,
         print_dup_stats=True,
@@ -762,8 +762,8 @@ def main():
         num_iterations=args.noise_val_iters,
         k_percent=args.noise_val_k_percent,
         top_frac=args.noise_val_top_frac,
-        contamination=0.05,
-        lof_k=100,
+        contamination=0.10,
+        lof_k=50,
         norm_scale=args.norm_scale,
         avg_degree_iso=args.noise_val_avg_degree_iso,
         avg_degree_spam=args.noise_val_avg_degree_spam,
