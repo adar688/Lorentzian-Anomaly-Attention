@@ -1,7 +1,7 @@
 import os
 import sys
 import subprocess
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Any
 
 import gradio as gr
 
@@ -10,7 +10,7 @@ import gradio as gr
 # Configuration constants
 # -----------------------
 
-# Script names: adjust to your project structure if needed
+# Script names: change if your files are in another folder or have other names
 PREPARE_SCRIPT = "prepareData.py"
 RUN_SCRIPT = "simple_main.py"
 
@@ -76,7 +76,7 @@ def run_script(script_name: str) -> Tuple[str, bool]:
 # Gradio callback functions
 # -----------------------
 
-def generate_data(current_logs: str) -> Tuple[str, gr.Update]:
+def generate_data(current_logs: str) -> Tuple[str, Any]:
     """
     Callback for 'Generate Data' button.
     Runs PREPARE_SCRIPT and appends logs.
@@ -89,7 +89,7 @@ def generate_data(current_logs: str) -> Tuple[str, gr.Update]:
     return new_logs, run_button_update
 
 
-def run_main(current_logs: str, idx_state: int):
+def run_main(current_logs: str, idx_state: int) -> Tuple[str, int, Any, Optional[str], Optional[str]]:
     """
     Callback for 'Run' button.
     Runs RUN_SCRIPT, appends logs, and reloads plots.
@@ -123,11 +123,11 @@ def run_main(current_logs: str, idx_state: int):
         img = None
         download_file = None
 
-    # After a successful run, keep 'Run' enabled (even if script failed you might change this logic)
+    # If the main script failed, you can change logic here if needed.
     return new_logs, idx_state, slider_update, img, download_file
 
 
-def reload_plots(idx_state: int):
+def reload_plots(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
     """
     Callback for 'Reload plots' button.
     Reloads plot list without running any script.
@@ -160,7 +160,7 @@ def reload_plots(idx_state: int):
     return idx_state, slider_update, img, download_file
 
 
-def change_plot_by_slider(slider_value: float, idx_state: int):
+def change_plot_by_slider(slider_value: float, idx_state: int) -> Tuple[int, Optional[str], Optional[str]]:
     """
     Callback when slider changes.
     Updates current plot according to slider position.
@@ -177,7 +177,7 @@ def change_plot_by_slider(slider_value: float, idx_state: int):
     return idx, img, download_file
 
 
-def prev_plot(idx_state: int):
+def prev_plot(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
     """
     Show previous plot in the list (cyclic).
     Also updates the slider position.
@@ -202,7 +202,7 @@ def prev_plot(idx_state: int):
     return idx_state, slider_update, img, download_file
 
 
-def next_plot(idx_state: int):
+def next_plot(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
     """
     Show next plot in the list (cyclic).
     Also updates the slider position.
@@ -253,7 +253,7 @@ with gr.Blocks() as demo:
         plot_image = gr.Image(
             label="Current plot",
             interactive=False,
-            type="filepath"  # so Gradio knows it's a path
+            type="filepath"  # path to image file
         )
         download_file = gr.File(
             label="Download current plot"
@@ -271,7 +271,7 @@ with gr.Blocks() as demo:
             visible=False
         )
 
-    # Wire buttons and slider to callbacks
+    # Wire callbacks
     btn_generate.click(
         fn=generate_data,
         inputs=[logs_box],
@@ -309,5 +309,5 @@ with gr.Blocks() as demo:
     )
 
 if __name__ == "__main__":
-    # Set share=True if you want a public URL as well (useful for Colab).
+    # share=True is useful in Colab (gives you a public URL).
     demo.launch()
