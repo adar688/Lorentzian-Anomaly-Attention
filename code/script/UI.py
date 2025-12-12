@@ -77,28 +77,41 @@ def get_plot_state(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[st
 # Streaming script runners
 # -----------------------
 
-def generate_data(current_logs: str) -> Generator[Tuple[str, Any], None, None]:
+def generate_data(current_logs: str) -> Generator[Tuple[str, Any, Any], None, None]:
     """
     Streaming callback for 'Generate Data' button.
 
-    Runs PREPARE_SCRIPT and yields logs as they arrive.
-    Enables 'Run' button only on success.
+    While the script is running:
+      - Disable the Generate button and show a loading label.
+      - Disable the Run button.
+    After completion:
+      - Re-enable Generate.
+      - Enable Run only if script succeeded.
+    Also filters noisy duplicate lines (e.g., from progress bars).
     """
     current_logs = current_logs or ""
     script_path = os.path.join(os.getcwd(), PREPARE_SCRIPT)
 
     header = "\n\n=== Generate Data ===\n"
+
+    # Initial state: set buttons to "running" for this action
+    btn_generate_update = gr.update(value="⏳ Generating...", interactive=False)
+    btn_run_update = gr.update(interactive=False)
+
     if not os.path.isfile(script_path):
         msg = f"❌ Script not found: {script_path}"
         current_logs += header + msg
-        # Run button remains disabled
-        yield current_logs, gr.update(interactive=False)
+        # Keep Generate enabled so user can fix and retry, Run stays disabled
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(interactive=False)
+        yield current_logs, btn_generate_update, btn_run_update
         return
 
     cmd = [sys.executable, script_path]
     current_logs += header + f"$ {' '.join(cmd)}\n"
-    # While running, keep Run button disabled
-    yield current_logs, gr.update(interactive=False)
+
+    # Show starting state immediately
+    yield current_logs, btn_generate_update, btn_run_update
 
     try:
         process = subprocess.Popen(
@@ -110,51 +123,92 @@ def generate_data(current_logs: str) -> Generator[Tuple[str, Any], None, None]:
         )
     except Exception as e:
         current_logs += f"\n❌ Failed to start {PREPARE_SCRIPT}: {e}"
-        yield current_logs, gr.update(interactive=False)
+        # Allow user to retry, Run stays disabled
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(interactive=False)
+        yield current_logs, btn_generate_update, btn_run_update
         return
 
-    # Stream stdout line by line
+    # Stream stdout line by line, skipping noisy duplicates
+    last_line: Optional[str] = None
     if process.stdout:
-        for line in process.stdout:
-            current_logs += line
-            # Keep Run button disabled during execution
-            yield current_logs, gr.update(interactive=False)
+        for raw_line in process.stdout:
+            # Strip trailing newline
+            line = raw_line.rstrip("\n")
+
+            # If there are carriage returns (e.g., tqdm progress), take last part
+            if "\r" in line:
+                line = line.split("\r")[-1]
+
+            # Skip empty lines
+            if not line.strip():
+                continue
+
+            # Skip consecutive identical lines (common for progress updates)
+            if line == last_line:
+                continue
+
+            last_line = line
+            current_logs += line + "\n"
+
+            # While running, keep same "loading" state on buttons
+            yield current_logs, btn_generate_update, btn_run_update
 
     process.wait()
     if process.returncode == 0:
         current_logs += "\n✅ Generate Data finished successfully.\n"
-        # Now enable Run button
-        yield current_logs, gr.update(interactive=True)
+        # Generate can be pressed again, Run is now enabled
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(value="Run", interactive=True)
+        yield current_logs, btn_generate_update, btn_run_update
     else:
         current_logs += f"\n❌ Generate Data exited with code {process.returncode}.\n"
-        # Keep Run disabled on failure
-        yield current_logs, gr.update(interactive=False)
+        # Allow retry of Generate, keep Run disabled
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(interactive=False)
+        yield current_logs, btn_generate_update, btn_run_update
 
 
-def run_main(current_logs: str, idx_state: int) -> Generator[Tuple[str, int, Any, Optional[str], Optional[str]], None, None]:
+def run_main(
+    current_logs: str,
+    idx_state: int
+) -> Generator[Tuple[str, int, Any, Optional[str], Optional[str], Any, Any], None, None]:
     """
     Streaming callback for 'Run' button.
 
-    Runs RUN_SCRIPT, streams logs, and at the end reloads plots.
+    While the script is running:
+      - Disable the Run button and show a loading label.
+      - Disable the Generate button.
+    After completion:
+      - Re-enable both buttons.
+      - Reload plots and show current plot state (starting from first plot on success).
+    Also filters noisy duplicate lines (e.g., from progress bars).
     """
     current_logs = current_logs or ""
     script_path = os.path.join(os.getcwd(), RUN_SCRIPT)
 
     header = "\n\n=== Run Main ===\n"
+
+    # While running this script, lock both buttons
+    btn_generate_update = gr.update(interactive=False)
+    btn_run_update = gr.update(value="⏳ Running...", interactive=False)
+
     if not os.path.isfile(script_path):
         msg = f"❌ Script not found: {script_path}"
         current_logs += header + msg
-        # Return current plot state unchanged
+        # Restore buttons to idle state (Generate enabled, Run disabled)
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(value="Run", interactive=False)
         idx_state, slider_update, img, download_file = get_plot_state(idx_state)
-        yield current_logs, idx_state, slider_update, img, download_file
+        yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
         return
 
     cmd = [sys.executable, script_path]
     current_logs += header + f"$ {' '.join(cmd)}\n"
 
-    # Before starting, show current plot state (if any)
+    # Show initial state (buttons locked + current plots)
     idx_state, slider_update, img, download_file = get_plot_state(idx_state)
-    yield current_logs, idx_state, slider_update, img, download_file
+    yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
 
     try:
         process = subprocess.Popen(
@@ -166,29 +220,50 @@ def run_main(current_logs: str, idx_state: int) -> Generator[Tuple[str, int, Any
         )
     except Exception as e:
         current_logs += f"\n❌ Failed to start {RUN_SCRIPT}: {e}"
+        # Unlock Generate, keep Run disabled
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(value="Run", interactive=False)
         idx_state, slider_update, img, download_file = get_plot_state(idx_state)
-        yield current_logs, idx_state, slider_update, img, download_file
+        yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
         return
 
-    # Stream stdout lines
+    # Stream stdout lines, skipping noisy duplicates
+    last_line: Optional[str] = None
     if process.stdout:
-        for line in process.stdout:
-            current_logs += line
-            # While running, keep the same plot state
+        for raw_line in process.stdout:
+            line = raw_line.rstrip("\n")
+
+            if "\r" in line:
+                line = line.split("\r")[-1]
+
+            if not line.strip():
+                continue
+
+            if line == last_line:
+                continue
+
+            last_line = line
+            current_logs += line + "\n"
+
+            # While running, keep same button state, refresh plots if needed
             idx_state, slider_update, img, download_file = get_plot_state(idx_state)
-            yield current_logs, idx_state, slider_update, img, download_file
+            yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
 
     process.wait()
     if process.returncode == 0:
         current_logs += "\n✅ Main script finished successfully.\n"
-        # After successful run, reload plots and show from first plot
+        # Reload plots from first index and unlock both buttons
         idx_state, slider_update, img, download_file = get_plot_state(0)
-        yield current_logs, idx_state, slider_update, img, download_file
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(value="Run", interactive=True)
+        yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
     else:
         current_logs += f"\n❌ Main script exited with code {process.returncode}.\n"
-        # Reload plots anyway (in case partial output exists)
+        # Reload plots (if any) and unlock buttons (Run stays enabled so user can retry)
         idx_state, slider_update, img, download_file = get_plot_state(idx_state)
-        yield current_logs, idx_state, slider_update, img, download_file
+        btn_generate_update = gr.update(value="Generate Data", interactive=True)
+        btn_run_update = gr.update(value="Run", interactive=True)
+        yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
 
 
 # -----------------------
@@ -294,15 +369,13 @@ with gr.Blocks() as demo:
     btn_generate.click(
         fn=generate_data,
         inputs=[logs_box],
-        outputs=[logs_box, btn_run],
-        
+        outputs=[logs_box, btn_generate, btn_run],
     )
 
     btn_run.click(
         fn=run_main,
         inputs=[logs_box, idx_state],
-        outputs=[logs_box, idx_state, plot_slider, plot_image, download_file],
-    
+        outputs=[logs_box, idx_state, plot_slider, plot_image, download_file, btn_generate, btn_run],
     )
 
     btn_reload.click(
@@ -330,5 +403,6 @@ with gr.Blocks() as demo:
     )
 
 if __name__ == "__main__":
-    # share=True is needed in Colab to get a public URL.
+    # queue() is recommended when using generator functions (streaming).
+    demo.queue()
     demo.launch(share=True)
