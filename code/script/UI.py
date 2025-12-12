@@ -295,14 +295,14 @@ with gr.Blocks() as demo:
         fn=generate_data,
         inputs=[logs_box],
         outputs=[logs_box, btn_run],
-        stream=True  # <-- enable streaming of logs
+        
     )
 
     btn_run.click(
         fn=run_main,
         inputs=[logs_box, idx_state],
         outputs=[logs_box, idx_state, plot_slider, plot_image, download_file],
-        stream=True  # <-- enable streaming of logs
+    
     )
 
     btn_reload.click(
