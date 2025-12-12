@@ -120,7 +120,7 @@ def _normalize_minmax(M: np.ndarray) -> np.ndarray:
 def _debug_stats(name: str, arr: np.ndarray):
     """Quick sanity stats printed once to ensure alignment across plots."""
     a = np.nan_to_num(arr, nan=0.0)
-    print(f"[{name}] shape={a.shape}  min={a.min():.6f}  max={a.max():.6f}  mean={a.mean():.6f}")
+    print(f"[{name}] shape={a.shape}  min={a.min():.6f}  max={a.max():.6f}  mean={a.mean():.6f}", flush=True)
 
 
 def print_dup_stats_numpy(X: np.ndarray, name: str):
@@ -133,7 +133,7 @@ def print_dup_stats_numpy(X: np.ndarray, name: str):
     print(
         f"[DUPS {name}] samples={num_samples}, unique={num_unique}, "
         f"max_duplicates_for_single_vector={int(max_dup)}, "
-        f"num_vectors_with_duplicates={int(num_duplicated)}"
+        f"num_vectors_with_duplicates={int(num_duplicated)}" , flush=True
     )
 
 
@@ -159,7 +159,7 @@ def run_if_lof_over_time(
 
     def _duplication_stats(X: np.ndarray, t: int):
         """Print basic duplication stats for a given time step."""
-        print_dup_stats_numpy(X, name=f"LOF_t={t}")
+        print_dup_stats_numpy(X, name=f"LOF_t={t}" ,flush=True)
 
     # Ensure [N, T, C]
     if att.dim() == 2:
@@ -207,7 +207,7 @@ def run_if_lof_over_time(
             ).fit(X_t)
             AS_if[:, t] = -if_clf.decision_function(X_t)
         except Exception as e:
-            print(f"[IF warning] t={t}: {e}")
+            print(f"[IF warning] t={t}: {e}", flush=True)
 
         # Local Outlier Factor (convert to larger=more anomalous)
         try:
@@ -220,7 +220,7 @@ def run_if_lof_over_time(
             _ = lof.fit_predict(X_t)
             AS_lof[:, t] = -(lof.negative_outlier_factor_)
         except Exception as e:
-            print(f"[LOF warning] t={t}: {e}")
+            print(f"[LOF warning] t={t}: {e}", flush=True)
 
     # Canonicalize both methods to non-negative scale (global min -> 0)
     AS_if = _normalize_minmax(AS_if)
@@ -425,7 +425,7 @@ def noise_injection_validation_full_pipeline(
 
     N_real, T, F = embedding_matrix.shape
     if N_real == 0:
-        print("[Noise Validation] No real nodes, skipping.")
+        print("[Noise Validation] No real nodes, skipping.", flush=True)
         return None
 
     device = next(model.parameters()).device
@@ -442,11 +442,11 @@ def noise_injection_validation_full_pipeline(
         f"\n===== Noise Injection Validation (full pipeline, mixed fake nodes) =====\n"
         f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
         f"iterations: {num_iterations}, top_frac={top_frac}, "
-        f"contamination={contamination}, lof_k={lof_k}, spam_ratio={spam_ratio}\n"
+        f"contamination={contamination}, lof_k={lof_k}, spam_ratio={spam_ratio}\n" ,flush=True
     )
 
     for it in range(num_iterations):
-        print(f"[Noise Validation] Iteration {it + 1}/{num_iterations}...")
+        print(f"[Noise Validation] Iteration {it + 1}/{num_iterations}...", flush=True)
 
         # 1) Generate mixed fake nodes in embedding space
         fake_emb = _create_fake_embeddings_from_real(
@@ -519,7 +519,7 @@ def noise_injection_validation_full_pipeline(
             print(
                 f"  [IF] thr={thr_if:.4f} | TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
                 f"(fake flagged: {num_fake_flagged_if}/{len(flags_fake_if)}, "
-                f"real flagged: {num_real_flagged_if}/{N_real})"
+                f"real flagged: {num_real_flagged_if}/{N_real})", flush=True
             )
 
         # --- LOF ---
@@ -543,7 +543,7 @@ def noise_injection_validation_full_pipeline(
             print(
                 f"  [LOF] thr={thr_lof:.4f} | TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
                 f"(fake flagged: {num_fake_flagged_lof}/{len(flags_fake_lof)}, "
-                f"real flagged: {num_real_flagged_lof}/{N_real})"
+                f"real flagged: {num_real_flagged_lof}/{N_real})", flush=True
             )
 
     def _summary(vals):
@@ -552,10 +552,10 @@ def noise_injection_validation_full_pipeline(
             return "n/a"
         return f"{vals.mean():.3f} ± {vals.std():.3f}"
 
-    print("\n===== Noise Injection Validation Summary (full pipeline, mixed fake nodes) =====")
-    print(f"IF : TPR={_summary(tpr_if_list)}, FPR={_summary(fpr_if_list)}")
-    print(f"LOF: TPR={_summary(tpr_lof_list)}, FPR={_summary(fpr_lof_list)}")
-    print("==========================================================================\n")
+    print("\n===== Noise Injection Validation Summary (full pipeline, mixed fake nodes) =====", flush=True)
+    print(f"IF : TPR={_summary(tpr_if_list)}, FPR={_summary(fpr_if_list)}", flush=True)
+    print(f"LOF: TPR={_summary(tpr_lof_list)}, FPR={_summary(fpr_lof_list)}", flush=True)
+    print("==========================================================================\n", flush=True)
 
     return {
         "tpr_if": tpr_if_list,
@@ -597,12 +597,12 @@ def main():
         workers=args.workers,
         window=args.window,
     )  # torch.Tensor [N, T, F]
-    print(f"✅ embedding_matrix shape: {tuple(embedding_matrix.shape)}")
+    print(f"✅ embedding_matrix shape: {tuple(embedding_matrix.shape)}", flush=True)
 
     # Duplicate stats on Node2Vec embeddings
     emb_np = embedding_matrix.detach().cpu().numpy()  # [N, T, F]
     for t in range(emb_np.shape[1]):
-        print_dup_stats_numpy(emb_np[:, t, :], name=f"Node2Vec_t={t}")
+        print_dup_stats_numpy(emb_np[:, t, :], name=f"Node2Vec_t={t}", flush=True)
 
     args.nfeat = int(embedding_matrix.shape[-1])  # F
     args.num_nodes = int(embedding_matrix.shape[0])  # N
@@ -633,7 +633,7 @@ def main():
 
     print(
         f"🔧 Dynhat ready (nhid={args.nhid}, temporal_heads={args.temporal_attention_layer_heads}, "
-        f"classes={args.num_classes})"
+        f"classes={args.num_classes})", flush=True
     )
 
     # 4) Training (no validation)
@@ -660,7 +660,7 @@ def main():
         loss.backward()
         optimizer.step()
 
-        print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}")
+        print(f"[Epoch {epoch}] Train Loss: {loss.item():.4f}", flush=True)
 
     # 5) Final representations (optional)
     model.eval()
@@ -679,13 +679,13 @@ def main():
 
     print(
         "✅ Done main pipeline. Shapes:",
-        f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}",
+        f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}", flush=True
     )
 
     # Duplicate stats on Dynhat + attention output
     att_np = att_out.detach().cpu().numpy()  # [N, T, C]
     for t in range(att_np.shape[1]):
-        print_dup_stats_numpy(att_np[:, t, :], name=f"Dynhat_att_t={t}")
+        print_dup_stats_numpy(att_np[:, t, :], name=f"Dynhat_att_t={t}", flush=True)
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(
@@ -696,17 +696,17 @@ def main():
         jitter_eps=1e-4,
         print_dup_stats=True,
     )
-    print("Top-20 IF(mean):", res["top_mu_if_idx"])
-    print("Top-20 IF(std):", res["top_std_if_idx"])
-    print("Top-20 LOF(mean):", res["top_mu_lof_idx"])
-    print("Top-20 LOF(std):", res["top_std_lof_idx"])
+    print("Top-20 IF(mean):", res["top_mu_if_idx"], flush=True)
+    print("Top-20 IF(std):", res["top_std_if_idx"], flush=True)
+    print("Top-20 LOF(mean):", res["top_mu_lof_idx"], flush=True)
+    print("Top-20 LOF(std):", res["top_std_lof_idx"], flush=True)
 
-    print("Min std_if:", np.min(res["std_if"]))
-    print("Min std_lof:", np.min(res["std_lof"]))
+    print("Min std_if:", np.min(res["std_if"]), flush=True)
+    print("Min std_lof:", np.min(res["std_lof"]) ,flush=True)
 
     common_top = set(res["top_mu_if_idx"]) & set(res["top_mu_lof_idx"])
-    print(f"✅ Common top anomalies between IF and LOF: {len(common_top)} nodes")
-    print(f"Common indices: {sorted(list(common_top))}")
+    print(f"✅ Common top anomalies between IF and LOF: {len(common_top)} nodes", flush=True)
+    print(f"Common indices: {sorted(list(common_top))}", flush=True)
 
     common_top_list = [int(i) for i in common_top]
     if common_top_list:
