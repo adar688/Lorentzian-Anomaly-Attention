@@ -349,7 +349,7 @@ def next_plot(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
 # -----------------------
 
 with gr.Blocks() as demo:
-    gr.Markdown("# Dynhat UI (Generate Data, Run, Logs & Plots Viewer)")
+    gr.Markdown("Lorentzian Anomaly Attention (LAA): A Self-Attentive Approach to Citation Networks")
 
     with gr.Row():
         btn_generate = gr.Button("Generate Data")
