@@ -310,4 +310,4 @@ with gr.Blocks() as demo:
 
 if __name__ == "__main__":
     # share=True is useful in Colab (gives you a public URL).
-    demo.launch()
+    demo.launch(share=True)
