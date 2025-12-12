@@ -12,7 +12,7 @@ import gradio as gr
 
 # Script names: adjust to your project structure if needed
 PREPARE_SCRIPT = "prepareData.py"
-RUN_SCRIPT = "simpleMain.py"
+RUN_SCRIPT = "simple_main.py"
 
 # Folder that contains generated plots
 PLOTS_DIR = "plots"
