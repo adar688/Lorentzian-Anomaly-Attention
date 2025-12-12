@@ -1,7 +1,7 @@
 import os
 import sys
 import subprocess
-from typing import List, Tuple, Optional, Any
+from typing import List, Tuple, Optional, Any, Generator
 
 import gradio as gr
 
@@ -37,100 +37,15 @@ def get_plot_files() -> List[str]:
     return files
 
 
-def run_script(script_name: str) -> Tuple[str, bool]:
+def get_plot_state(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
     """
-    Run a Python script by name using the current Python interpreter.
+    Compute slider + image state based on current index and available plot files.
 
     Returns:
-        logs (str): Combined stdout + stderr.
-        success (bool): True if returncode == 0.
-    """
-    script_path = os.path.join(os.getcwd(), script_name)
-    if not os.path.isfile(script_path):
-        return f"❌ Script not found: {script_path}", False
-
-    cmd = [sys.executable, script_path]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True
-        )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += "\n" + result.stderr
-
-        if result.returncode == 0:
-            header = f"✅ {script_name} finished successfully.\n"
-            return header + output, True
-        else:
-            header = f"❌ {script_name} exited with code {result.returncode}.\n"
-            return header + output, False
-    except Exception as e:
-        return f"❌ Failed to run {script_name}: {e}", False
-
-
-# -----------------------
-# Gradio callback functions
-# -----------------------
-
-def generate_data(current_logs: str) -> Tuple[str, Any]:
-    """
-    Callback for 'Generate Data' button.
-    Runs PREPARE_SCRIPT and appends logs.
-    Enables 'Run' button only on success.
-    """
-    logs, success = run_script(PREPARE_SCRIPT)
-    current_logs = current_logs or ""
-    new_logs = current_logs + "\n\n=== Generate Data ===\n" + logs
-    run_button_update = gr.update(interactive=success)
-    return new_logs, run_button_update
-
-
-def run_main(current_logs: str, idx_state: int) -> Tuple[str, int, Any, Optional[str], Optional[str]]:
-    """
-    Callback for 'Run' button.
-    Runs RUN_SCRIPT, appends logs, and reloads plots.
-    """
-    logs, success = run_script(RUN_SCRIPT)
-    current_logs = current_logs or ""
-    new_logs = current_logs + "\n\n=== Run Main ===\n" + logs
-
-    files = get_plot_files()
-    if files:
-        # Reset index to first plot
-        idx_state = 0
-        slider_update = gr.update(
-            minimum=1,
-            maximum=len(files),
-            step=1,
-            value=1,
-            visible=True
-        )
-        img = files[0]
-        download_file = files[0]
-    else:
-        idx_state = 0
-        slider_update = gr.update(
-            minimum=0,
-            maximum=0,
-            step=1,
-            value=0,
-            visible=False
-        )
-        img = None
-        download_file = None
-
-    # If the main script failed, you can change logic here if needed.
-    return new_logs, idx_state, slider_update, img, download_file
-
-
-def reload_plots(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
-    """
-    Callback for 'Reload plots' button.
-    Reloads plot list without running any script.
+        idx_state (int): possibly adjusted index
+        slider_update (gr.Update): update object for the slider
+        img (str | None): filepath of current image
+        download_file (str | None): filepath for download component
     """
     files = get_plot_files()
     if not files:
@@ -142,21 +57,150 @@ def reload_plots(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]
             value=0,
             visible=False
         )
-        img = None
-        download_file = None
-    else:
-        # Ensure index is in range
-        idx_state = max(0, min(idx_state, len(files) - 1))
-        slider_update = gr.update(
-            minimum=1,
-            maximum=len(files),
-            step=1,
-            value=idx_state + 1,
-            visible=True
-        )
-        img = files[idx_state]
-        download_file = files[idx_state]
+        return idx_state, slider_update, None, None
 
+    # Clamp index
+    idx_state = max(0, min(idx_state, len(files) - 1))
+    slider_update = gr.update(
+        minimum=1,
+        maximum=len(files),
+        step=1,
+        value=idx_state + 1,
+        visible=True
+    )
+    img = files[idx_state]
+    download_file = files[idx_state]
+    return idx_state, slider_update, img, download_file
+
+
+# -----------------------
+# Streaming script runners
+# -----------------------
+
+def generate_data(current_logs: str) -> Generator[Tuple[str, Any], None, None]:
+    """
+    Streaming callback for 'Generate Data' button.
+
+    Runs PREPARE_SCRIPT and yields logs as they arrive.
+    Enables 'Run' button only on success.
+    """
+    current_logs = current_logs or ""
+    script_path = os.path.join(os.getcwd(), PREPARE_SCRIPT)
+
+    header = "\n\n=== Generate Data ===\n"
+    if not os.path.isfile(script_path):
+        msg = f"❌ Script not found: {script_path}"
+        current_logs += header + msg
+        # Run button remains disabled
+        yield current_logs, gr.update(interactive=False)
+        return
+
+    cmd = [sys.executable, script_path]
+    current_logs += header + f"$ {' '.join(cmd)}\n"
+    # While running, keep Run button disabled
+    yield current_logs, gr.update(interactive=False)
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        current_logs += f"\n❌ Failed to start {PREPARE_SCRIPT}: {e}"
+        yield current_logs, gr.update(interactive=False)
+        return
+
+    # Stream stdout line by line
+    if process.stdout:
+        for line in process.stdout:
+            current_logs += line
+            # Keep Run button disabled during execution
+            yield current_logs, gr.update(interactive=False)
+
+    process.wait()
+    if process.returncode == 0:
+        current_logs += "\n✅ Generate Data finished successfully.\n"
+        # Now enable Run button
+        yield current_logs, gr.update(interactive=True)
+    else:
+        current_logs += f"\n❌ Generate Data exited with code {process.returncode}.\n"
+        # Keep Run disabled on failure
+        yield current_logs, gr.update(interactive=False)
+
+
+def run_main(current_logs: str, idx_state: int) -> Generator[Tuple[str, int, Any, Optional[str], Optional[str]], None, None]:
+    """
+    Streaming callback for 'Run' button.
+
+    Runs RUN_SCRIPT, streams logs, and at the end reloads plots.
+    """
+    current_logs = current_logs or ""
+    script_path = os.path.join(os.getcwd(), RUN_SCRIPT)
+
+    header = "\n\n=== Run Main ===\n"
+    if not os.path.isfile(script_path):
+        msg = f"❌ Script not found: {script_path}"
+        current_logs += header + msg
+        # Return current plot state unchanged
+        idx_state, slider_update, img, download_file = get_plot_state(idx_state)
+        yield current_logs, idx_state, slider_update, img, download_file
+        return
+
+    cmd = [sys.executable, script_path]
+    current_logs += header + f"$ {' '.join(cmd)}\n"
+
+    # Before starting, show current plot state (if any)
+    idx_state, slider_update, img, download_file = get_plot_state(idx_state)
+    yield current_logs, idx_state, slider_update, img, download_file
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        current_logs += f"\n❌ Failed to start {RUN_SCRIPT}: {e}"
+        idx_state, slider_update, img, download_file = get_plot_state(idx_state)
+        yield current_logs, idx_state, slider_update, img, download_file
+        return
+
+    # Stream stdout lines
+    if process.stdout:
+        for line in process.stdout:
+            current_logs += line
+            # While running, keep the same plot state
+            idx_state, slider_update, img, download_file = get_plot_state(idx_state)
+            yield current_logs, idx_state, slider_update, img, download_file
+
+    process.wait()
+    if process.returncode == 0:
+        current_logs += "\n✅ Main script finished successfully.\n"
+        # After successful run, reload plots and show from first plot
+        idx_state, slider_update, img, download_file = get_plot_state(0)
+        yield current_logs, idx_state, slider_update, img, download_file
+    else:
+        current_logs += f"\n❌ Main script exited with code {process.returncode}.\n"
+        # Reload plots anyway (in case partial output exists)
+        idx_state, slider_update, img, download_file = get_plot_state(idx_state)
+        yield current_logs, idx_state, slider_update, img, download_file
+
+
+# -----------------------
+# Non-streaming helpers (reload plots, navigation)
+# -----------------------
+
+def reload_plots(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
+    """
+    Callback for 'Reload plots' button.
+    Reloads plot list without running any script.
+    """
+    idx_state, slider_update, img, download_file = get_plot_state(idx_state)
     return idx_state, slider_update, img, download_file
 
 
@@ -171,7 +215,6 @@ def change_plot_by_slider(slider_value: float, idx_state: int) -> Tuple[int, Opt
 
     idx = int(slider_value) - 1
     idx = max(0, min(idx, len(files) - 1))
-
     img = files[idx]
     download_file = files[idx]
     return idx, img, download_file
@@ -184,22 +227,10 @@ def prev_plot(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
     """
     files = get_plot_files()
     if not files:
-        slider_update = gr.update(
-            minimum=0, maximum=0, step=1, value=0, visible=False
-        )
-        return 0, slider_update, None, None
+        return get_plot_state(0)
 
     idx_state = (idx_state - 1) % len(files)
-    slider_update = gr.update(
-        minimum=1,
-        maximum=len(files),
-        step=1,
-        value=idx_state + 1,
-        visible=True
-    )
-    img = files[idx_state]
-    download_file = files[idx_state]
-    return idx_state, slider_update, img, download_file
+    return get_plot_state(idx_state)
 
 
 def next_plot(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
@@ -209,22 +240,10 @@ def next_plot(idx_state: int) -> Tuple[int, Any, Optional[str], Optional[str]]:
     """
     files = get_plot_files()
     if not files:
-        slider_update = gr.update(
-            minimum=0, maximum=0, step=1, value=0, visible=False
-        )
-        return 0, slider_update, None, None
+        return get_plot_state(0)
 
     idx_state = (idx_state + 1) % len(files)
-    slider_update = gr.update(
-        minimum=1,
-        maximum=len(files),
-        step=1,
-        value=idx_state + 1,
-        visible=True
-    )
-    img = files[idx_state]
-    download_file = files[idx_state]
-    return idx_state, slider_update, img, download_file
+    return get_plot_state(idx_state)
 
 
 # -----------------------
@@ -275,13 +294,15 @@ with gr.Blocks() as demo:
     btn_generate.click(
         fn=generate_data,
         inputs=[logs_box],
-        outputs=[logs_box, btn_run]
+        outputs=[logs_box, btn_run],
+        stream=True  # <-- enable streaming of logs
     )
 
     btn_run.click(
         fn=run_main,
         inputs=[logs_box, idx_state],
-        outputs=[logs_box, idx_state, plot_slider, plot_image, download_file]
+        outputs=[logs_box, idx_state, plot_slider, plot_image, download_file],
+        stream=True  # <-- enable streaming of logs
     )
 
     btn_reload.click(
@@ -309,5 +330,5 @@ with gr.Blocks() as demo:
     )
 
 if __name__ == "__main__":
-    # share=True is useful in Colab (gives you a public URL).
+    # share=True is needed in Colab to get a public URL.
     demo.launch(share=True)
