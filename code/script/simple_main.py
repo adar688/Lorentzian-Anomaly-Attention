@@ -159,7 +159,7 @@ def run_if_lof_over_time(
 
     def _duplication_stats(X: np.ndarray, t: int):
         """Print basic duplication stats for a given time step."""
-        print_dup_stats_numpy(X, name=f"LOF_t={t}" ,flush=True)
+        print_dup_stats_numpy(X, name=f"LOF_t={t}" )
 
     # Ensure [N, T, C]
     if att.dim() == 2:
@@ -602,7 +602,7 @@ def main():
     # Duplicate stats on Node2Vec embeddings
     emb_np = embedding_matrix.detach().cpu().numpy()  # [N, T, F]
     for t in range(emb_np.shape[1]):
-        print_dup_stats_numpy(emb_np[:, t, :], name=f"Node2Vec_t={t}", flush=True)
+        print_dup_stats_numpy(emb_np[:, t, :], name=f"Node2Vec_t={t}")
 
     args.nfeat = int(embedding_matrix.shape[-1])  # F
     args.num_nodes = int(embedding_matrix.shape[0])  # N
@@ -685,7 +685,7 @@ def main():
     # Duplicate stats on Dynhat + attention output
     att_np = att_out.detach().cpu().numpy()  # [N, T, C]
     for t in range(att_np.shape[1]):
-        print_dup_stats_numpy(att_np[:, t, :], name=f"Dynhat_att_t={t}", flush=True)
+        print_dup_stats_numpy(att_np[:, t, :], name=f"Dynhat_att_t={t}")
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(
