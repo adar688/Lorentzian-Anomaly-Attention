@@ -714,11 +714,9 @@ def main():
             AS_if=res["AS_if"],
             AS_lof=res["AS_lof"],
             node_indices=common_top_list,
-            save_dir="plots/common_if_lof_timeseries",
+            save_dir="plots",
         )
 
-    # 7) Plots (all consistent, non-negative scale)
-    plot_mean_std(mu=res["mu_if"], std=res["std_if"], top_k=20, save_dir="plots")
 
     if "AS_if" in res and res["AS_if"] is not None:
         plot_top_node_timeseries_by_method(
