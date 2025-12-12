@@ -87,7 +87,7 @@ def generate_data(current_logs: str) -> Generator[Tuple[str, Any, Any], None, No
     After completion:
       - Re-enable Generate.
       - Enable Run only if script succeeded.
-    Also filters noisy duplicate lines (e.g., from progress bars).
+    Also filters noisy duplicate lines (e.g., from progress bars) and batches updates.
     """
     current_logs = current_logs or ""
     script_path = os.path.join(os.getcwd(), PREPARE_SCRIPT)
@@ -129,8 +129,11 @@ def generate_data(current_logs: str) -> Generator[Tuple[str, Any, Any], None, No
         yield current_logs, btn_generate_update, btn_run_update
         return
 
-    # Stream stdout line by line, skipping noisy duplicates
+    # Stream stdout line by line, skipping noisy duplicates and batching updates
     last_line: Optional[str] = None
+    buffer_lines: list[str] = []
+    flush_every = 5  # update UI every N lines
+
     if process.stdout:
         for raw_line in process.stdout:
             # Strip trailing newline
@@ -149,10 +152,19 @@ def generate_data(current_logs: str) -> Generator[Tuple[str, Any, Any], None, No
                 continue
 
             last_line = line
-            current_logs += line + "\n"
+            buffer_lines.append(line)
 
-            # While running, keep same "loading" state on buttons
-            yield current_logs, btn_generate_update, btn_run_update
+            # Flush buffer to UI every few lines
+            if len(buffer_lines) >= flush_every:
+                current_logs += "\n".join(buffer_lines) + "\n"
+                buffer_lines.clear()
+                yield current_logs, btn_generate_update, btn_run_update
+
+    # Flush any remaining buffered lines
+    if buffer_lines:
+        current_logs += "\n".join(buffer_lines) + "\n"
+        buffer_lines.clear()
+        yield current_logs, btn_generate_update, btn_run_update
 
     process.wait()
     if process.returncode == 0:
@@ -182,7 +194,7 @@ def run_main(
     After completion:
       - Re-enable both buttons.
       - Reload plots and show current plot state (starting from first plot on success).
-    Also filters noisy duplicate lines (e.g., from progress bars).
+    Also filters noisy duplicate lines and batches updates, without rescanning plots each line.
     """
     current_logs = current_logs or ""
     script_path = os.path.join(os.getcwd(), RUN_SCRIPT)
@@ -206,7 +218,7 @@ def run_main(
     cmd = [sys.executable, script_path]
     current_logs += header + f"$ {' '.join(cmd)}\n"
 
-    # Show initial state (buttons locked + current plots)
+    # Initial plots state before running (do not refresh them on every log line)
     idx_state, slider_update, img, download_file = get_plot_state(idx_state)
     yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
 
@@ -227,8 +239,11 @@ def run_main(
         yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
         return
 
-    # Stream stdout lines, skipping noisy duplicates
+    # Stream stdout lines, skipping noisy duplicates and batching updates
     last_line: Optional[str] = None
+    buffer_lines: list[str] = []
+    flush_every = 5  # update UI every N lines
+
     if process.stdout:
         for raw_line in process.stdout:
             line = raw_line.rstrip("\n")
@@ -243,11 +258,19 @@ def run_main(
                 continue
 
             last_line = line
-            current_logs += line + "\n"
+            buffer_lines.append(line)
 
-            # While running, keep same button state, refresh plots if needed
-            idx_state, slider_update, img, download_file = get_plot_state(idx_state)
-            yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
+            if len(buffer_lines) >= flush_every:
+                current_logs += "\n".join(buffer_lines) + "\n"
+                buffer_lines.clear()
+                # While running, keep the same plots and button state
+                yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
+
+    # Flush remaining buffered lines
+    if buffer_lines:
+        current_logs += "\n".join(buffer_lines) + "\n"
+        buffer_lines.clear()
+        yield current_logs, idx_state, slider_update, img, download_file, btn_generate_update, btn_run_update
 
     process.wait()
     if process.returncode == 0:
