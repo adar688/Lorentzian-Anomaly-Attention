@@ -10,7 +10,6 @@ def _to_class_idx(arr: np.ndarray) -> np.ndarray:
     return arr.argmax(axis=1).astype(np.int64) if arr.ndim == 2 else arr.astype(np.int64)
 
 def load_citation_data(dataset_str, use_feats, data_path, split_seed=None):
-    # קבצים נדרשים
     man_path    = os.path.join(data_path, "manifest.json")
     splits_path = os.path.join(data_path, "splits.json")
     graph_path  = os.path.join(data_path, "graph.json")
@@ -26,7 +25,6 @@ def load_citation_data(dataset_str, use_feats, data_path, split_seed=None):
         if not os.path.exists(p):
             raise FileNotFoundError(p)
 
-    # מטא + ספליטים
     with open(man_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
     with open(splits_path, "r", encoding="utf-8") as f:
@@ -37,7 +35,6 @@ def load_citation_data(dataset_str, use_feats, data_path, split_seed=None):
     idx_val   = list(map(int, splits["val"]))
     idx_test  = list(map(int, splits["test"]))
 
-    # פיצ'רים
     if use_feats:
         X_tr = _load_csr_from_npz(feats_tr)
         X_ax = _load_csr_from_npz(feats_ax)
@@ -50,7 +47,7 @@ def load_citation_data(dataset_str, use_feats, data_path, split_seed=None):
     else:
         features = sp.eye(N, dtype=np.float32, format="csr")
 
-    # תוויות
+
     y_tr   = np.load(labs_tr,   allow_pickle=False)["arr"]
     y_ally = np.load(labs_ally, allow_pickle=False)["arr"]
     y_te   = np.load(labs_te,   allow_pickle=False)["arr"]
@@ -59,7 +56,7 @@ def load_citation_data(dataset_str, use_feats, data_path, split_seed=None):
     labels[idx_val]   = _to_class_idx(y_ally[len(idx_train): len(idx_train)+len(idx_val)])
     labels[idx_test]  = _to_class_idx(y_te)
 
-    # גרף → מטריצת שכנויות CSR
+
     with open(graph_path, "r", encoding="utf-8") as f:
         graph = json.load(f)  # {"0":[1,2], "1":[...], ...}
     rows, cols = [], []
