@@ -117,26 +117,6 @@ def _normalize_minmax(M: np.ndarray) -> np.ndarray:
     return M
 
 
-def _debug_stats(name: str, arr: np.ndarray):
-    """Quick sanity stats printed once to ensure alignment across plots."""
-    a = np.nan_to_num(arr, nan=0.0)
-    print(f"[{name}] shape={a.shape}  min={a.min():.6f}  max={a.max():.6f}  mean={a.mean():.6f}", flush=True)
-
-
-def print_dup_stats_numpy(X: np.ndarray, name: str):
-    """Print duplication statistics for a matrix X of shape [N, F]."""
-    unique_rows, counts = np.unique(X, axis=0, return_counts=True)
-    num_samples = X.shape[0]
-    num_unique = unique_rows.shape[0]
-    max_dup = counts.max()
-    num_duplicated = np.sum(counts > 1)
-    print(
-        f"[DUPS {name}] samples={num_samples}, unique={num_unique}, "
-        f"max_duplicates_for_single_vector={int(max_dup)}, "
-        f"num_vectors_with_duplicates={int(num_duplicated)}" , flush=True
-    )
-
-
 # ======================
 #    IF/LOF OVER TIME
 # ======================
@@ -146,7 +126,6 @@ def run_if_lof_over_time(
     lof_k: int = 10,
     topk: int = 20,
     jitter_eps: float = 1e-4,
-    print_dup_stats: bool = False,
 ):
     """
     att: torch.Tensor of shape [N, T, C] or [N, C]
@@ -156,10 +135,6 @@ def run_if_lof_over_time(
       - top indices: top_mu_if_idx, top_std_if_idx, top_mu_lof_idx, top_std_lof_idx
       - AS_if, AS_lof: full time-series matrices [N, T] (after canonicalization)
     """
-
-    def _duplication_stats(X: np.ndarray, t: int):
-        """Print basic duplication stats for a given time step."""
-        print_dup_stats_numpy(X, name=f"LOF_t={t}" )
 
     # Ensure [N, T, C]
     if att.dim() == 2:
@@ -189,9 +164,6 @@ def run_if_lof_over_time(
 
         # Scale to [0, 1]
         X_t = MinMaxScaler().fit_transform(X_t)
-
-        if print_dup_stats and t == 0:
-            _duplication_stats(X_t, t)
 
         # Add small jitter to break exact duplicates
         if jitter_eps is not None and jitter_eps > 0.0:
@@ -225,9 +197,6 @@ def run_if_lof_over_time(
     # Canonicalize both methods to non-negative scale (global min -> 0)
     AS_if = _normalize_minmax(AS_if)
     AS_lof = _normalize_minmax(AS_lof)
-
-    _debug_stats("AS_if (canon)", AS_if)
-    _debug_stats("AS_lof (canon)", AS_lof)
 
     # Per-node summaries on the canonized matrices
     mu_if = np.nanmean(AS_if, axis=1)
@@ -442,7 +411,8 @@ def noise_injection_validation_full_pipeline(
         f"\n===== Noise Injection Validation (full pipeline, mixed fake nodes) =====\n"
         f"Real nodes: {N_real}, fake per iteration: {num_fake_per_iter} ({k_percent}%), "
         f"iterations: {num_iterations}, top_frac={top_frac}, "
-        f"contamination={contamination}, lof_k={lof_k}, spam_ratio={spam_ratio}\n" ,flush=True
+        f"contamination={contamination}, lof_k={lof_k}, spam_ratio={spam_ratio}\n",
+        flush=True,
     )
 
     for it in range(num_iterations):
@@ -492,7 +462,6 @@ def noise_injection_validation_full_pipeline(
             lof_k=lof_k,
             topk=0,
             jitter_eps=1e-4,
-            print_dup_stats=False,
         )
 
         AS_if = res_aug.get("AS_if", None)
@@ -519,7 +488,8 @@ def noise_injection_validation_full_pipeline(
             print(
                 f"  [IF] thr={thr_if:.4f} | TPR={tpr_if:.3f}, FPR={fpr_if:.3f} "
                 f"(fake flagged: {num_fake_flagged_if}/{len(flags_fake_if)}, "
-                f"real flagged: {num_real_flagged_if}/{N_real})", flush=True
+                f"real flagged: {num_real_flagged_if}/{N_real})",
+                flush=True,
             )
 
         # --- LOF ---
@@ -543,7 +513,8 @@ def noise_injection_validation_full_pipeline(
             print(
                 f"  [LOF] thr={thr_lof:.4f} | TPR={tpr_lof:.3f}, FPR={fpr_lof:.3f} "
                 f"(fake flagged: {num_fake_flagged_lof}/{len(flags_fake_lof)}, "
-                f"real flagged: {num_real_flagged_lof}/{N_real})", flush=True
+                f"real flagged: {num_real_flagged_lof}/{N_real})",
+                flush=True,
             )
 
     def _summary(vals):
@@ -599,11 +570,6 @@ def main():
     )  # torch.Tensor [N, T, F]
     print(f"✅ embedding_matrix shape: {tuple(embedding_matrix.shape)}", flush=True)
 
-    # Duplicate stats on Node2Vec embeddings
-    emb_np = embedding_matrix.detach().cpu().numpy()  # [N, T, F]
-    for t in range(emb_np.shape[1]):
-        print_dup_stats_numpy(emb_np[:, t, :], name=f"Node2Vec_t={t}")
-
     args.nfeat = int(embedding_matrix.shape[-1])  # F
     args.num_nodes = int(embedding_matrix.shape[0])  # N
 
@@ -633,7 +599,8 @@ def main():
 
     print(
         f"🔧 Dynhat ready (nhid={args.nhid}, temporal_heads={args.temporal_attention_layer_heads}, "
-        f"classes={args.num_classes})", flush=True
+        f"classes={args.num_classes})",
+        flush=True,
     )
 
     # 4) Training (no validation)
@@ -679,13 +646,9 @@ def main():
 
     print(
         "✅ Done main pipeline. Shapes:",
-        f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}", flush=True
+        f"N={att_out.shape[0]}, T={att_out.shape[1]}, C={att_out.shape[2]}",
+        flush=True,
     )
-
-    # Duplicate stats on Dynhat + attention output
-    att_np = att_out.detach().cpu().numpy()  # [N, T, C]
-    for t in range(att_np.shape[1]):
-        print_dup_stats_numpy(att_np[:, t, :], name=f"Dynhat_att_t={t}")
 
     # 6) Anomaly over time (IF/LOF) + canonicalization
     res = run_if_lof_over_time(
@@ -694,15 +657,15 @@ def main():
         lof_k=100,
         topk=20,
         jitter_eps=1e-4,
-        print_dup_stats=True,
     )
+
     print("Top-20 IF(mean):", res["top_mu_if_idx"], flush=True)
     print("Top-20 IF(std):", res["top_std_if_idx"], flush=True)
     print("Top-20 LOF(mean):", res["top_mu_lof_idx"], flush=True)
     print("Top-20 LOF(std):", res["top_std_lof_idx"], flush=True)
 
     print("Min std_if:", np.min(res["std_if"]), flush=True)
-    print("Min std_lof:", np.min(res["std_lof"]) ,flush=True)
+    print("Min std_lof:", np.min(res["std_lof"]), flush=True)
 
     common_top = set(res["top_mu_if_idx"]) & set(res["top_mu_lof_idx"])
     print(f"✅ Common top anomalies between IF and LOF: {len(common_top)} nodes", flush=True)
@@ -716,7 +679,6 @@ def main():
             node_indices=common_top_list,
             save_dir="plots",
         )
-
 
     if "AS_if" in res and res["AS_if"] is not None:
         plot_top_node_timeseries_by_method(
